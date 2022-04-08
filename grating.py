@@ -1,7 +1,7 @@
 
 import numpy as np
 from numpy import pi,sqrt,sin,cos,ceil
-# from wave import Wave
+# from waves import Wave
 
 def isvalid(g0,g1=None):
     bs = g0 if g1 is None else grating2bars(g0,g1)

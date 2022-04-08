@@ -2,7 +2,7 @@
 #  -*- coding: utf-8 -*-
 from freetype import *
 import numpy as np
-from geometry import eliminateholes
+from geometry import eliminateholes,signedpolyarea,rotatecurves,plotcurvelist
 
 class Font(object):
     import freetype
@@ -162,7 +162,7 @@ class Font(object):
         return ''.join(a)
     def plotall(self,holeless=True):
         text = self.allchars()
-        rows = int(sqrt(len(text)/1.6))
+        rows = int(np.sqrt(len(text)/1.6))
         rowlen = [len(text)//rows + (i<len(text)%rows) for i in range(rows)] # print(rowlen,sum(rowlen),len(text)) # print([[sum(rowlen[0:i]),sum(rowlen[0:i+1])] for i in range(rows)])
         # words = '\n'.join([text[sum(rowlen[0:i]):sum(rowlen[0:i+1])] for i in range(rows)])
         words = ['\n'*i + text[sum(rowlen[0:i]):sum(rowlen[0:i+1])] for i in range(rows)]
@@ -209,4 +209,4 @@ if __name__ == '__main__':
     Font(r'C:\Windows\Fonts\akzidenz.ttf').plotall()
     Font(r'C:\Windows\Fonts\wingding.ttf').plotall() # no chr found to plot
     plotcurvelist( Font(r'C:\Windows\Fonts\Interstate-Bold.ttf').holelesscharcurves('®') )
-    plotcurvelist( rotatecurves(Font(r'C:\Windows\Fonts\Interstate-Bold.ttf').holelesscharcurves('®'),angle=pi,x0=50,y0=50) )
+    plotcurvelist( rotatecurves(Font(r'C:\Windows\Fonts\Interstate-Bold.ttf').holelesscharcurves('®'),angle=np.pi,x0=50,y0=50) )

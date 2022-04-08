@@ -6,12 +6,22 @@ import matplotlib.pyplot as plt
 from numpy import pi,sqrt,sin,cos,tan,arcsin,arccos,arctan,arctan2,log,exp,floor,ceil
 
 import os,sys
-# insert at 1, 0 is the script path (or '' in REPL)
-# sys.path.insert(1, '../sell')
-# from wave import V,Vs,Wave
+# sys.path.insert(1, '../../sell')
+# from waves import V,Vs,Wave
 from grating import grating
 
-class Bunch():                      # javascript-like object # code.activestate.com/recipes/52308/
+# TODO:
+# from collections import OrderedDict
+# class DotDict(OrderedDict):
+#     # dictionary with the ability to read/write attributes and treat keys as attributes
+#     # example: point = DotDict(datum=y, squared=y*y, coord=x); if point.squared > threshold: point.isok = 1
+#     def __init__(self, *args, **kwargs): super(DotDict, self).__init__(*args, **kwargs)
+#     def __delattr__(self, name): del self[name]
+#     def __getattr__(self, k): return self[k]
+#     __setattr__ = OrderedDict.__setitem__
+#     def __str__(self):              # (use namedtuple instead if immutable) # from collections import namedtuple # Point = namedtuple('Point', 'x y')
+#         return ','.join(sorted([k+':'+str(v) for k,v in self.items()]))
+class DotDict():                      # javascript-like object # code.activestate.com/recipes/52308/
     def __init__(self, **kwds):     # you can read/write the named attributes you just created, add others, del some, etc
         self.__dict__.update(kwds)  # example: point = Bunch(datum=y, squared=y*y, coord=x); if point.squared > threshold: point.isok = 1
     def __str__(self):              # (use namedtuple instead if immutable) # from collections import namedtuple # Point = namedtuple('Point', 'x y')
@@ -697,15 +707,19 @@ def intersect(p1,q1,p2,q2): # https://www.geeksforgeeks.org/check-if-two-given-l
     o4 = orientation(p2, q2, q1) 
     if ((o1 != o2) and (o3 != o4)):  # General case 
         return True
-    if ((o1 == 0) and onSegment(p1, p2, q1)): # p1 , q1 and p2 are colinear and p2 lies on segment p1q1 
+    if ((o1 == 0) and onSegment(p1, p2, q1)): # p1 , q1 and p2 are collinear and p2 lies on segment p1q1 
         return True
-    if ((o2 == 0) and onSegment(p1, q2, q1)): # p1 , q1 and q2 are colinear and q2 lies on segment p1q1 
+    if ((o2 == 0) and onSegment(p1, q2, q1)): # p1 , q1 and q2 are collinear and q2 lies on segment p1q1 
         return True
-    if ((o3 == 0) and onSegment(p2, p1, q2)): # p2 , q2 and p1 are colinear and p1 lies on segment p2q2 
+    if ((o3 == 0) and onSegment(p2, p1, q2)): # p2 , q2 and p1 are collinear and p1 lies on segment p2q2 
         return True
-    if ((o4 == 0) and onSegment(p2, q1, q2)): # p2 , q2 and q1 are colinear and q1 lies on segment p2q2 
+    if ((o4 == 0) and onSegment(p2, q1, q2)): # p2 , q2 and q1 are collinear and q1 lies on segment p2q2 
         return True
     return False
+def collinear(p0,p1,q0,q1):
+    (p0x,p0y),(p1x,p1y),(q0x,q0y),(q1x,q1y) = p0,p1,q0,q1
+    px,py,qx,qy = p1x-p0x,p1y-p0y,q1x-q0x,q1y-q0y
+    return np.abs(px*qy - qx*py) < 1e-10
 def crossing(p0,p1,q0,q1):
     if intersect(p0,p1,q0,q1):
         return p0!=q0 and p0!=q1 and p1!=q0 and p1!=q1
@@ -715,7 +729,11 @@ def issimplepolygon(c):
     for n,seg0 in enumerate(segs):
         for seg1 in segs[n+1:]:
             (p0,p1),(q0,q1) = seg0,seg1
-            if crossing(p0,p1,q0,q1): return False
+            if crossing(p0,p1,q0,q1):
+                # from waves import Vs
+                # Vs.plots(Vs([p0,p1]),Vs([q0,q1]))
+                # print('collinear(p0,p1,q0,q1)',collinear(p0,p1,q0,q1))
+                return False
     return True
 def rectanglepackertest(chiplengthlist,rotation=True):
     from rectpack import newPacker
@@ -737,24 +755,27 @@ def rectanglepackertest(chiplengthlist,rotation=True):
 if __name__ == '__main__':
     def validpolytest():
         c = [(0,0),(1,0),(1,1),(0,1),(0,0)] # square
-        print(issimplepolygon(c))
+        print(issimplepolygon(c),True)
         c = [(0,0),(1,1),(1,0),(0,1),(0,0)] # bowtie
-        print(issimplepolygon(c))
+        print(issimplepolygon(c),False)
         c = [(0,0),(1,0),(1,1),(0,0.5),(0,1),(0,0)] # touching V
-        print(issimplepolygon(c))
+        print(issimplepolygon(c),False)
     def intersecttest(f):
-        print( f((0,1), (0,2), (2,10), (1,9)) )  # non intersect # doesn't pass?
-        print( f((0,1), (0,2), (1,10), (1,9)) )  # non intersect parallel  lines
-        print( f((0,1), (0,2), (1,10), (2,10)) ) # non intersect vertical and horizontal lines
-        print( f((0,1), (1,2), (0,10), (1,9)) )  # non intersect
-        print( f((0,1), (0,2), (1,1), (1,3)) )  # non intersect
-        print( f((0,1), (0,2), (1,3), (1,1)) )  # non intersect
-        print( f((0,1), (0,3), (0,2), (0,4)) )  # overlapping parallel
-        print( f((0,1), (0,3), (0,3), (1,4)) )  # touching  lines
-        print( f((1,1), (3,1), (2.5,2), (2.5,0)) )  # +
-        print( f((7,7), (-6,-6), (-9,9), (6,-6)) )  # x at origin
-        print( f((7,7), (-6,-8), (-7,9), (9,-6)) )  # x
-        print( f((0,0), (0,3), (-1,3), (1,3)) )  # T
+        print([
+            f((0,1), (0,2), (2,10), (1,9)),  # non intersect
+            f((0,1), (0,2), (1,10), (1,9)),  # non intersect parallel  lines
+            f((0,1), (0,2), (1,10), (2,10)), # non intersect vertical and horizontal lines
+            f((0,1), (1,2), (0,10), (1,9)),  # non intersect
+            f((0,1), (0,2), (1,1), (1,3)),  # non intersect
+            f((0,1), (0,2), (1,3), (1,1)),  # non intersect
+            f((0,1), (0,3), (0,2), (0,4)),  # overlapping parallel
+            f((0,1), (0,3), (0,3), (1,4)),  # touching  lines
+            f((1,1), (3,1), (2.5,2), (2.5,0)),  # +
+            f((7,7), (-6,-6), (-9,9), (6,-6)),  # x at origin
+            f((7,7), (-6,-8), (-7,9), (9,-6)),  # x
+            f((0,0), (0,3), (-1,3), (1,3)),  # T
+            ])
+        print([bool(i) for i in [0,0,0,0,0,0,1,1,1,1,1,1]])
     def pathtest():
         xys = np.array([[0,0],[1,1],[2,1],[2,2]])
         ws = [.2,.3,.4,.2]
@@ -821,7 +842,6 @@ if __name__ == '__main__':
         cs += taperedribbons(pps + ((-r,r+ty) if upsidedown else (-r,-r-ty)),ffs)
         cs += taperedribbons(pps + ((L+r,+r+ty) if upsidedown else (L+r,-r-ty)),ffs)
         Wave.plots(*[w.wave() for w in cs],x='x (µm)',y='y (µm)',xlim=(-2000,3000),m=0,seed=0,markersize=2,aspect=1,pause=pause)
-
     pause = 1
     pathtest()
     factettest()
