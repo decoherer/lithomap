@@ -30,7 +30,7 @@ e.plot();
 ```
 
 
-![png](tutorial_files/tutorial_4_0.png)
+![png](README_files/README_4_0.png)
 
 
 Various operations are available such a translating and scaling. Methods can be chained.
@@ -42,7 +42,7 @@ e.plot();
 ```
 
 
-![png](tutorial_files/tutorial_6_0.png)
+![png](README_files/README_6_0.png)
 
 
 Elements can also contain **Notes**, which are the building blocks for creating annotated wafer maps and chip maps.
@@ -57,7 +57,7 @@ ee.plot(scale=0.5);
 ```
 
 
-![png](tutorial_files/tutorial_8_0.png)
+![png](README_files/README_8_0.png)
 
 
 Elements can have subelements, all of which are typically belong to a single parent mask element. Subelements can futher have subelements of their own. The root element must have a layer defined, typically 'MASK'; subelements will by default have the same layer. It is recommended to always name new elements.
@@ -79,7 +79,7 @@ mask0.plot(scale=0.5);
     
 
 
-![png](tutorial_files/tutorial_10_1.png)
+![png](README_files/README_10_1.png)
 
 
 Text elements can also be added. Note how the letters 'e' and 'o' are formed and how text must be inset. Shapes that are contained inside of other shapes are not allowed.
@@ -101,7 +101,7 @@ mask1.plot(scale=2);
     
 
 
-![png](tutorial_files/tutorial_12_1.png)
+![png](README_files/README_12_1.png)
 
 
 ### Building a chip
@@ -147,7 +147,7 @@ chip.plot(scale=2);
     
 
 
-![png](tutorial_files/tutorial_18_1.png)
+![png](README_files/README_18_1.png)
 
 
 
@@ -174,7 +174,7 @@ mask2.plot(scale=2);
     
 
 
-![png](tutorial_files/tutorial_19_1.png)
+![png](README_files/README_19_1.png)
 
 
 Typical **info** attributes:
