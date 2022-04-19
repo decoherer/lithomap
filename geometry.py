@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from numpy import pi,sqrt,sin,cos,tan,arcsin,arccos,arctan,arctan2,log,exp,floor,ceil
 
 import os,sys
-# sys.path.insert(1, '../../sell')
+# sys.path.insert(1, '../sell') # insert at 1, 0 is the script path (or '' in REPL)
 # from waves import V,Vs,Wave
 from grating import grating
 
@@ -72,7 +72,8 @@ def chipidtext(n,rows):
 def svg2png(file):
     assert '.svg'==file[-4:]
     from time import process_time,sleep
-    os.environ['path'] += r';c:\Octave\Octave-4.4.1\bin' # location of libcairo-2.dll, https://stackoverflow.com/a/60220855/12322780
+    # os.environ['path'] += r';c:\Octave\Octave-4.4.1\bin' # location of libcairo-2.dll, https://stackoverflow.com/a/60220855/12322780
+    os.environ['path'] += r';C:\Program Files\Inkscape\bin' # location of libcairo-2.dll, https://stackoverflow.com/a/60220855/12322780
     # doesn't work in 32 bit python, try: https://weasyprint.readthedocs.io/en/latest/install.html#windows
     import cairosvg
     with open(file,'rb') as f:
@@ -407,7 +408,7 @@ def splittapersbend(dx,dy,taperx,sx,sy):
     roc1,roc2 = 1/k0**2/a0, 1/kk**2/aa
     # print('  x0,y0',xs[-1],ys[-1])
     # print('  x1,y1',xxs[0],yys[0])
-    print('  roc1,roc2',roc1,roc2)
+    # print('  roc1,roc2',roc1,roc2)
     return xs,ys,xxs,yys,roc1,roc2,curvelength(list(xs)+list(xxs),list(ys)+list(yys))
 def testsbend():
     xs,ys,roc,ds = sbend(1000,100)
@@ -432,6 +433,10 @@ def closest(a,b): # return index of closest pair of points in curves a and b
     return m0,n0
 def acontainsb(a,b): # True is all points of b are inside and not touching a
     return all(matplotlib.path.Path(a).contains_points(b))
+def reorient(c,positiveorientation=True):
+    if not positiveorientation:
+        return c if 0<signedpolyarea(c) else c[::-1]
+    return c[::-1] if 0<signedpolyarea(c) else c
 def eliminateholes(cc,showgap=False):
     # reduce outer and innerpolygons to single outer polygon
     # assumes inner and outer polygons have opposite signed area
@@ -452,12 +457,28 @@ def eliminateholes(cc,showgap=False):
     if h is None: # end recursion if no holes found
         return cc
     an,bn = h
-    assert -1==np.sign(signedpolyarea(cc[an])*signedpolyarea(cc[bn])), 'inner and outer curves must be opposite cw/ccw to combine'
-    def cutdonut(a,b): # asumes b is a hole inside a (creating donut), returns a replacement 'cut' donut 
+    assert -1==np.sign(signedpolyarea(cc[an])*signedpolyarea(cc[bn])), 'inner and outer curves must be opposite cw/ccw to combine (try reorient)'
+    def cutdonut(a,b): # asumes b is hole inside a (creating donut), returns replacement 'cut' donut 
         m,n = closest(a,b) # index of closest pair of points in curves a and b
         return list(a[:m+(0 if showgap else 1)]) + list(b[n:]) + list(b[:n+(0 if showgap else 1)]) + list(a[m:])
     cc[an] = cutdonut(cc[an],cc[bn])
     return eliminateholes([c for c in cc[:bn]+cc[bn+1:]],showgap)
+def subtractcurves(a,b): # return a-b as a list of curves (multiple curves are possible if b cuts a into pieces)
+    from shapely.geometry import Polygon,MultiPolygon
+    # return Polygon(a) - Polygon(b) # return a-b as Shapely polygon or multipolygon
+    c = Polygon(a) - Polygon(b)
+    if isinstance(c,MultiPolygon):
+        polygons = c.geoms
+    elif isinstance(c,Polygon):
+        polygons = [c]
+    else:
+        assert 0
+    return [[(x,y) for x,y in ci.exterior.coords] for ci in polygons]
+def checkerboardmetric(dx,dy,nx=2,ny=8,x=0,y=0,centered=False):
+    def rect(x,y,dx,dy):
+        return [(x,y),(x+dx,y),(x+dx,y+dy),(x,y+dy),(x,y)]
+    cc = [rect(x+i*dx,y-j*dy-dy,dx,dy) for i in range(nx) for j in range(ny) if 0==(i+j)%2]
+    return cc if not centered else [[(x-dx/2,y-dy/2) for x,y in c] for c in cc]
 
 class Path():
     def __init__(self,xys,width,normal=None,cw=False): # width=3 or width=[2,3,4] or width = lambda u:1+u
@@ -535,6 +556,42 @@ class Arch(Path):
         p = Path(self.xys.copy(),width=self.width,cw=self.cw)
         p.r,p.φ0,p.φ1 = self.r,self.φ0,self.φ1
         return p
+def sinease(x):
+    return sin(x*pi/2)**2
+def cosease(x): # cosease = sinease
+    return 0.5*(1-cos(pi*x))
+def cornerease(x,n=2):
+    return 0.5*( 1 + np.sign(2*x-1) * np.abs(2*x-1)**(1/n) )
+def powerease(x,n=2):
+    return np.where(x<0.5,0.5*abs(2*x)**n,1-0.5*abs(2-2*x)**n)
+def cpwelectrode(L=100,r=200,dx=1000,dy=400,gvhwave=None,α=0.01,mirrory=False):
+    gvhwave = gvhwave if gvhwave is not None else Wave([20,150],[10,30])
+    h0,h1 = gvhwave.x[0],gvhwave.x[-1]
+    def ease(u):
+        return sinease(u)
+        # return powerease(u,9)
+    def fhot(u):
+        return h0+ease(u)*(h1-h0)
+    def fghg(u):
+        return fhot(u) + 2*gvhwave(fhot(u))
+    A = Arch(r,pi/2,pi,width=fhot,minangle=α)
+    B = Path([(0,0),(L,0)],width=fhot(0))
+    C = Arch(r,pi/2,0,width=fhot,p0=[L,0],minangle=α)
+    AA = Arch(r,pi/2,pi,width=fghg,minangle=α)
+    BB = Path([(0,0),(L,0)],width=fghg(0))
+    CC = Arch(r,pi/2,0,width=fghg,p0=[L,0],minangle=α)
+    # Wave.plots(*[a.wave() for a in [A,B,C,AA,BB,CC]],aspect=1,seed=2)
+    def rect(x0,y0,dx,dy):
+        # return [(x0,y0),(x0+0.5*dx,y0),(x0+dx,y0),(x0+dx,y0+dy),(x0+0.5*dx,y0+dy),(x0,y0+dy),(x0,y0)]
+        return [(x0,y0),(x0+dx,y0),(x0+dx,y0+dy),(x0,y0+dy),(x0,y0)]
+    box = upsamplecurve(rect(-dx/2+L/2,-r+1,dx,dy-2),doublings=5) # print(box) # Vs(box).plot()
+    box = subtractcurves(box,AA.curve())[0]
+    box = subtractcurves(box,BB.curve())[0]
+    curves = subtractcurves(box,CC.curve())
+    curves = [a.curve() for a in [A,B,C]] + curves
+    # vss = [Vs(c) for c in curves]
+    # Vs.plots(*vss)
+    return [[(x,-y) for x,y in c] for c in curves] if mirrory else curves
 def flattoparch(p0,L,r,spacings,minangle=0.1,upsidedown=1): # spacings = list of [width,gap,width,gap,..,width] from bottom to top, r and p0 are relative to middle element of spacings
     n,n0,p0,spacings = len(spacings),len(spacings)//2,V(p0),np.array(spacings)
     assert 1==n%2, "spacings can't be even"
@@ -579,7 +636,7 @@ def ribbons(L,spacings,endspacings=None,p0=(0,0),horizontal=True): # use endspac
         return [Path(a+np.array([[0,y0],[0,y1]]),[w0,w1],normal=(1,0)) for y0,y1,w0,w1 in zip(y0s,y1s,w0s,w1s)]
 def taperedribbons(xys,widthfuncs,p0=(0,0),gaptest=False):
     n,n0,p0 = len(widthfuncs),len(widthfuncs)//2,np.array(p0)
-    assert 1==n%2, "widthfuncs can't be even"
+    assert 1==n%2, "can't be even number of widthfuncs"
     def xoffset(i,x):
         def xi(i,x):
             # print(i,widthfuncs[:i])
@@ -842,18 +899,17 @@ if __name__ == '__main__':
         cs += taperedribbons(pps + ((-r,r+ty) if upsidedown else (-r,-r-ty)),ffs)
         cs += taperedribbons(pps + ((L+r,+r+ty) if upsidedown else (L+r,-r-ty)),ffs)
         Wave.plots(*[w.wave() for w in cs],x='x (µm)',y='y (µm)',xlim=(-2000,3000),m=0,seed=0,markersize=2,aspect=1,pause=pause)
-    pause = 1
-    pathtest()
-    factettest()
-    arctest()
-    ribbonarctest()
-    ribbontest()
-    pathfunctiontest()
-    taperedribbontest()
-    mzribbonstest()
-    mztapertest()
-    intersecttest(intersect)
-    validpolytest()
-    savedxf()
-    testsbend()
-
+    # pause = 1
+    # pathtest()
+    # factettest()
+    # arctest()
+    # ribbonarctest()
+    # ribbontest()
+    # pathfunctiontest()
+    # taperedribbontest()
+    # mzribbonstest()
+    # mztapertest()
+    # intersecttest(intersect)
+    # validpolytest()
+    # savedxf()
+    # testsbend()
