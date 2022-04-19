@@ -9,10 +9,10 @@ class WaveguideChip(Chip):
         self.info.groupspacing = 200
         self.adddiceguides()
         self.y += 300
-        g1 = Element('group',parent=self).addguidelabels(dy=-50)
+        g1 = Group(parent=self).addguidelabels(dy=-50)
         for _ in range(7):
             g1.addchannel(3)
-        g2 = Element('group',parent=self).addguidelabels(dy=-50)
+        g2 = Group(parent=self).addguidelabels(dy=-50)
         for _ in range(7):
             g2.addchannel(3)
         return self

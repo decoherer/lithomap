@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 #  -*- coding: utf-8 -*-
-from __future__ import print_function,division,unicode_literals
+# from __future__ import print_function,division,unicode_literals
 import numpy as np
 from numpy import pi,sqrt,sin,cos,tan,arcsin,arccos,arctan,arctan2,log,exp,floor,ceil
 import os,pickle
 from decimal import Decimal
 from geometry import chipidtext,rotatecurve,curvesboundingbox,rectsboundingbox,cropcurves,plotcurves,plotcurvelist,issimplepolygon
-from geometry import upsamplecurve,eliminateholes,textcurves,scaletext,float2string,sbend,polyarea
+from geometry import upsamplecurve,eliminateholes,textcurves,scaletext,float2string,sbend,polyarea,cpwelectrode,reorient,checkerboardmetric,splittapersbend
 from geometry import DotDict,PPfloat,OrderedDictFromCSV
 from font import Font
 from savedxf import savemask,savedxfwithlayers
@@ -107,24 +107,27 @@ class Element:
         #         nx,ny = (n-1)//self.info.rows,(n-1)%self.info.rows
         #         self.info.columns = max(getattr(self.info,'columns',0),nx+1)
         #     e.info.chipid = str(ny+1)+'ABCDEFGHIJ'[nx]
-        if name.endswith('group'):
-            e.info.groupnumber = self.info.groupcount = getattr(self.info,'groupcount',0) + 1
-            if self.info.groupcount>1: self.y += self.info.groupspacing
-            if 2==e.info.groupnumber: # show group spacing note between g1.last and g2.1
-                self.addnote(self.x+1000,self.y-self.info.groupspacing/2,separation=self.info.groupspacing)
-            e.x,e.y = self.x,self.y
-        if name.endswith('guide'):
-            self.info.guidecount = getattr(self.info,'guidecount',0) + 1
-            guidespacing = guidespacing if guidespacing is not None else self.finddefaultinfo('guidespacing') # self.parent.info.guidespacing
-            if self.info.guidecount>1:
-                self.y += guidespacing
-                self.parent.y = self.y
-                # both group and chip are updated with y position of current waveguide
-                # chip.y should probably be updated when adding wide guides (spltter,mz) but isn't yet
-            if 2==self.info.guidecount and 1==self.info.groupnumber: # show guide spacing note between g1.1 and g1.2
-                self.addnote(self.x+1000,self.y-guidespacing/2,separation=guidespacing)
-            e.info.guidenumber = str(self.info.groupnumber) + '.' + str(self.info.guidecount)
-            e.x,e.y = self.x,self.y
+        # print(e,isinstance(e,Group),type(e))
+        if name.endswith('group') and not isinstance(e,Group):
+            assert 0, "discontinued, use Group(parent=e) instead of Element('group',parent=self)"
+            # e.info.groupnumber = self.info.groupcount = getattr(self.info,'groupcount',0) + 1
+            # if self.info.groupcount>1: self.y += self.info.groupspacing
+            # if 2==e.info.groupnumber: # show group spacing note between g1.last and g2.1
+            #     self.addnote(self.x+1000,self.y-self.info.groupspacing/2,separation=self.info.groupspacing)
+            # e.x,e.y = self.x,self.y
+        if name.endswith('guide') and not isinstance(e,Guide):
+            assert 0, "discontinued, use Guide(parent=e) instead of Element('guide',parent=self)"
+        #     self.info.guidecount = getattr(self.info,'guidecount',0) + 1
+        #     guidespacing = guidespacing if guidespacing is not None else self.finddefaultinfo('guidespacing') # self.parent.info.guidespacing
+        #     if self.info.guidecount>1:
+        #         self.y += guidespacing
+        #         self.parent.y = self.y
+        #         # both group and chip are updated with y position of current waveguide
+        #         # chip.y should probably be updated when adding wide guides (spltter,mz) but isn't yet
+        #     if 2==self.info.guidecount and 1==self.info.groupnumber: # show guide spacing note between g1.1 and g1.2
+        #         self.addnote(self.x+1000,self.y-guidespacing/2,separation=guidespacing)
+        #     e.info.guidenumber = str(self.info.groupnumber) + '.' + str(self.info.guidecount)
+        #     e.x,e.y = self.x,self.y
         if hasattr(self,'width'): e.width = self.width  # for keeping track of current waveguide width
         return self
     def subrects(self):
@@ -264,11 +267,15 @@ class Element:
         self.notes = [Note(x0+note.x,y0+note.y,note.dy,**note.note) for note in self.notes]
         self.elems = [e.translate(x0,y0) for e in self.elems]
         return self
+    def translatex(self,x0):
+        return self.translate(x0,0)
+    def translatey(self,y0):
+        return self.translate(0,y0)
     def rotate(self,angle,x0=0,y0=0):
         def recttopoly(x,y,dx,dy): return [(x,y),(x+dx,y),(x+dx,y+dy),(x,y+dy),(x,y)]
         self.polys = [rotatecurve(c,angle,x0,y0) for c in self.polys] + [rotatecurve(recttopoly(*r),angle,x0,y0) for r in self.rects]
         self.rects = []
-        self.notes = [] # rotated notes not implemented
+        self.notes = [] # rotated notes not yet implemented
         self.elems = [e.rotate(angle,x0,y0) for e in self.elems]
         return self
     def roundoff(self,res=0.0001,decimal=False,warn=True): # python Decimal class is used to print precisely rounded numbers to .dxf (e.g. 0.805 instead of 0.805000001)
@@ -294,6 +301,9 @@ class Element:
             self.addoversizemetric(width=width,oversize=w,x=xmetric+(i-i0/2)*2*dx*nx,y=ymetric,dx=dx,nx=nx,ny=ny)
             self.addtext(f"{w:.1f}",xmetric+(i-i0/2)*2*dx*nx+dx*nx+10,ymetric,scale=0.2)
     def addoversizemetric(self,width,oversize,x,y,dx=10,nx=8,ny=6):
+        # if the target waveguide width on the mask is 3 but due to litho exposure it ends up 0.2 wider
+        #  than intended (i.e. waveguide width on wafer is now 3.2), then the metric with value
+        #  width = 3, oversize = 3.2 will now be the one that looks like a perfect checkerboard.
         dy,ds = width,2*width-oversize
         for i in range(nx):
             for j in range(ny):
@@ -339,14 +349,35 @@ class Element:
         e = Element('text',parent=self)
         e.addpolys(cc)
         return self
-    def addinsettext(self,polylist,s,x0=0,y0=0,fitx=0,fity=0,margin=0,scale=1,fitcenter=True,vertical=False,scaleifdev=True,font=None):
+    def addinsettext(self,polylist,s,x0=0,y0=0,fitx=0,fity=0,margin=0,scale=1,fitcenter=True,vertical=False,scaleifdev=True,font=None,justify='left'):
         assert polylist[0][0], 'polylist must be a list of polygons, where each polygon is a list of (x,y) points'
         f = Font(font if font is not None else self.finddefaultinfo('font'),size=128,screencoordinates=True)
         cc = f.textcurves(s,verticallayout=vertical)
         cc = [upsamplecurve(c) for c in cc]
         cc = scaletext(cc,x0,y0,fitx,fity,margin,scale,fitcenter,dev=(dev and scaleifdev),scalemag=sqrt(scalemag))
+        if justify not in 'l left'.split():
+            def boundingbox(cc): # returns (x0,y1,dx,dy)
+                x0,y0,x1,y1 = (1e99,1e99,-1e99,-1e99)
+                for c in cc:
+                    for x,y in c:
+                        x0,y0 = min(x0,x),min(y0,y)
+                        x1,y1 = max(x1,x),max(y1,y)
+                return (x0,y0,x1-x0,y1-y0)
+            def addpointtocurve(p,qs):
+                return [tuple([pi+qi for pi,qi in zip(p,q)]) for q in qs]
+            _,_,dx,_ = boundingbox(cc)
+            assert justify in 'c center r right'.split()
+            p0 = (-dx,0) if justify in 'r right'.split() else (-dx/2,0)
+            cc = [addpointtocurve(p0,c) for c in cc]
         self.addpolys(eliminateholes(polylist+cc))
         return self
+    def insetshapes(self,cc):
+        assert not self.rects and not self.elems
+        oldpolys = self.polys
+        self.polys = []
+        self.addpolys(eliminateholes(oldpolys+cc))
+        return self
+
     def boundingbox(self): # curvesboundingbox
         pbb = curvesboundingbox(self.subpolys())
         rbb = rectsboundingbox(self.subrects())
@@ -371,7 +402,7 @@ class Element:
         bs = [check(c) for c in self.subpolys()]
         assert all(bs), 'invalid polygon found'
         print('all polygons valid')
-    def plot(self,screencoordinates=True,scale=1):
+    def plot(self,screencoordinates=True,scale=1,notes=True):
         # plotcurves(cc,screencoordinates=True)
         import matplotlib
         import matplotlib.pyplot as plt
@@ -387,8 +418,9 @@ class Element:
         fig = plt.gcf()
         sx,sy = scale if hasattr(scale,'__len__') else (scale,scale)
         fig.set_size_inches((fig.get_size_inches()[0]*sx, fig.get_size_inches()[1]*sy))
-        for note in self.subnotes():
-            plt.text(note.x,note.y,note.text())
+        if notes:
+            for note in self.subnotes():
+                plt.text(note.x,note.y,note.text())
         plt.show()
         return self
     def savemask(self,filename,txt=False,layers=[],layernames=[],svg=True,png=True,verbose=True,folder=None):
@@ -411,7 +443,7 @@ class Element:
         self.addchipdicepath(x0=0,y0=00000,dx=76000,layer='ELECTRODE')
         self.addchipdicepath(x0=0,y0=+dy/2,dx=76000,layer='ELECTRODE')
         return self
-    def adddiceguides(self,x=None,y=None,chipx=None,chipy=None,s=25,strip=False):
+    def adddiceguides(self,x=None,y=None,chipx=None,chipy=None,s=25,strip=False,repx=1000):
         e = Element('dice',parent=self)
         x,y = getattr(self,'x',0) if x is None else x, getattr(self,'y',0) if y is None else y
         chipx = chipx if chipx is not None else self.finddefaultinfo('chiplength')
@@ -421,10 +453,10 @@ class Element:
             for xx in range(0,endx,periodx):
                 # self.addrect(x0+xx+x,y0+y,dx,dy) # won't show up in chip map! why not?
                 e.addrect(x0+xx+x,y0+y,dx,dy)
-        repeatx((0,0,2*s,s),1000,chipx)
-        repeatx((0,s,s,2*s),5000,chipx)
-        repeatx((0,chipy-2*s,s,s),2000,chipx)
-        repeatx((0,chipy-s,2*s,s),1000,chipx)
+        repeatx((0,0,2*s,s),repx,chipx)
+        repeatx((0,s,s,2*s),5*repx,chipx)
+        repeatx((0,chipy-2*s,s,s),2*repx,chipx)
+        repeatx((0,chipy-s,2*s,s),repx,chipx)
         if strip:
             ee = Element('dicestrip',layer='STRIPPING',parent=self)
             sy = 150
@@ -658,7 +690,7 @@ class Element:
     def addmodefilterspliced(self,width,splicex1,splicex2,dx=None,inwidth=0,outwidth=0,modefilterx=None,taperx=None,swapinandout=False):
         # same as addmodefilter() but with a gap missing in the channel part from splicex1 to splicex2
         if swapinandout: inwidth,outwidth = outwidth,inwidth
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         if not inwidth and not outwidth: modefilterx,taperx = 0,0
@@ -672,14 +704,9 @@ class Element:
         e.x = splicex2
         e.addonmodefilter(width,dx-splicex2,0,outwidth,modefilterx,taperx)
         return self
-
-    def newmetric(self,x,y):
-        self.addrect(x,y,3,3)
-        return self
-
     def addmodefilter(self,width,dx=None,inwidth=0,outwidth=0,modefilterx=None,taperx=None,swapinandout=False,x0=None,y0=None): # default will be placed at self.x,self.y
         if swapinandout: inwidth,outwidth = outwidth,inwidth
-        e = Element('guide',parent=self,x=x0,y=y0)
+        e = Guide(parent=self,x=x0,y=y0)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         if not inwidth and not outwidth: modefilterx,taperx = 0,0
@@ -735,7 +762,7 @@ class Element:
             g.addrect(p0[0]-mx,p0[1]-my,size[0]+2*mx,size[1]+2*my)
         return self
     def addshgmodefilter(self,width,period,gx=None,gy=None,dx=None,inwidth=0,outwidth=0,modefilterx=None,taperx=None,x0=None,y0=None,extendpoling=False,dc=None):
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         # if modefilterx: e.info.modefilterlength = modefilterx
@@ -753,7 +780,7 @@ class Element:
             e.addlayergrating(period,gx=gx,gy=gy,x0=x0+modefilterx+taperx,y0=y0,dc=dc)
         return self
     def addmultishgmodefilter(self,width,periods,gxs,dx=None,inwidth=0,outwidth=0,modefilterx=None,taperx=None,x0=None,y0=None,dc=None):
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         modefilterx = modefilterx if modefilterx is not None else e.finddefaultinfo('modefilterlength')
@@ -770,7 +797,7 @@ class Element:
             x0 += gx
         return self
     def addinterleavedshgmf(self,width,period1,period2,overpole=0,gx=None,gy=None,dx=None,inwidth=0,outwidth=0,modefilterx=None,taperx=None,x0=None,y0=None,extendpoling=False):
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         # if modefilterx: e.info.modefilterlength = modefilterx
@@ -788,7 +815,7 @@ class Element:
             e.addinterleavedlayergrating(period1,period2,gx,gy,x0+modefilterx+taperx,y0,overpole=overpole)
         return self
     def addconsecutiveshgmf(self,width,periods,gxs=None,inwidth=0,outwidth=0,gap=100,modefilterx=None,taperx=None,apodize=None):
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         modefilterx = modefilterx if modefilterx is not None else e.finddefaultinfo('modefilterlength')
@@ -807,7 +834,7 @@ class Element:
             e.addlayergrating(pj,gx=gj,x0=xj,y0=y0,apodize=apodize[i] if hasattr(apodize,'__len__') else apodize )
         return self
     def adddualshgmf(self,width,period1,period2,gx1=None,gx2=None,inwidth=0,outwidth=0,gap=100):
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if inwidth: e.info.inputmodefilter = inwidth
         if outwidth: e.info.outputmodefilter = outwidth
         modefilterx = e.finddefaultinfo('modefilterlength')
@@ -836,7 +863,7 @@ class Element:
             # xmetric,ymetric = x0+modefilterx+taperx+sbendlength+couplerx/2,y0+(vgroovepitch+6*width if mirror else 0)
             xmetric,ymetric = x0+modefilterx+taperx+sbendlength+couplerx/2,y0+(vgroovepitch if mirror else width*6)
             self.addoversizemetrics(width,xmetric,ymetric,nx=8,ny=6)
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         e.info.inputmodefilter,e.info.outputmodefilter,e.info.guidewidth = mfsbendin,mfsbendout,width
         if mfsbendin==mfchannelin==0:
             e.addonchannel(modefilterx+taperx,width=width)
@@ -850,7 +877,7 @@ class Element:
             e.addonchannel(gx).addontaper(taperx,outwidth=mfsbendout).addonchannel(modefilterx)
         else:
             e.addonchannel(gx+taperx+modefilterx)
-        ee = Element('guide',parent=self,guidespacing=vgroovepitch)
+        ee = Guide(parent=self,guidespacing=vgroovepitch)
         ee.info.inputmodefilter,ee.info.outputmodefilter,ee.info.guidewidth = mfchannelin,mfchannelout,width
         if mfsbendin==mfchannelin==0:
             ee.addonchannel(modefilterx+taperx,width=width)
@@ -885,7 +912,7 @@ class Element:
         #print 'mfsbendin,mfsbendout,mfchannelin,mfchannelout',mfsbendin,'\_/->',mfsbendout,mfchannelin,'-->',mfchannelout,'gratingonsbend',gratingonsbend,'gap',couplergap,'couplerx',couplerx,'period',period
         print('modefilters:',mfsbendin,'\_/->',mfsbendout,',',mfchannelin,'-->',mfchannelout,'gap:',couplergap,'L0:',couplerx,'couplerguidewidth',couplerwidth,'period:',period,'gratingonsbend:',gratingonsbend,'pumponsbend:',pumponsbend,'criticaldimension:',couplergap-couplerwidth)
 
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         x0,y0 = e.x,e.y
         e.info.inputmodefilter,e.info.outputmodefilter,e.info.guidewidth = mfsbendin,mfsbendout,width
         e.addonchannel(modefilterx,width=mfsbendin).addontaper(taperx,outwidth=couplerwidth)
@@ -904,7 +931,7 @@ class Element:
         # if ((invertwdm and not gratingonsbend) or (not invertwdm and gratingonsbend)) and grating:
         e.addlayergrating(period,gx=gx+(taperx+modefilterx)*extendpoling*(0==mfsbendout),x0=gx0,y0=e.y)
 
-        ee = Element('guide',parent=self,guidespacing=vgroovepitch)
+        ee = Guide(parent=self,guidespacing=vgroovepitch)
         ee.info.inputmodefilter,ee.info.outputmodefilter,ee.info.guidewidth = mfchannelin,mfchannelout,width
         ee.addonchannel(modefilterx,width=mfchannelin).addontaper(taperx,outwidth=couplerwidth)
         ee.addonsbend(sbendlength,0).addonchannel(couplerx)
@@ -948,14 +975,14 @@ class Element:
         sx = dx-2*modefilterx-2*taperx-2*sbendlength-1*couplerx
         # sx = gx+taperx+sbendlength+couplerx
 
-        e0 = Element('guide',x=x0,y=y0,parent=self) # input ir
+        e0 = Guide(x=x0,y=y0,parent=self) # input ir
         e0.addonchannel(modefilterx,width=mfir).addontaper(taperx,outwidth=couplerwidth)
         e0.addonsbend(sbendlength,vgroovepitch-couplergap).addonchannel(couplerx,note=0)
         e0.addnote(e0.x-couplerx/2,e0.y,gap=float2string(couplergap)+' gap')
         e0.addonsbend(sbendlength,couplergap-vgroovepitch).addonchannel(sx)
         e0.addontaper(taperx,outwidth=mfir).addonchannel(modefilterx,width=mfir)
 
-        e1 = Element('guide',x=x0,y=y0+vgroovepitch,parent=self) # input shg
+        e1 = Guide(x=x0,y=y0+vgroovepitch,parent=self) # input shg
         e1.addonchannel(modefilterx,width=mfshg).addontaper(taperx,outwidth=couplerwidth)
         e1.addonchannel(sbendlength).addonchannel(couplerx).addontaper(taperx,outwidth=width)
         gx0, gy0 = e1.x, e1.y
@@ -965,7 +992,7 @@ class Element:
         e1.addontaper(taperx,outwidth=width).addonchannel(couplerx).addonchannel(sbendlength)
         e1.addontaper(taperx,outwidth=couplerwidth).addonchannel(modefilterx,width=mfshg)
 
-        e2 = Element('guide',x=x0,y=y0+2*vgroovepitch,parent=self) # output ir
+        e2 = Guide(x=x0,y=y0+2*vgroovepitch,parent=self) # output ir
         e2.addonchannel(modefilterx,width=mfir).addontaper(taperx,outwidth=couplerwidth)
         e2.addonchannel(sx)
         e2.addonsbend(sbendlength,couplergap-vgroovepitch).addonchannel(couplerx,note=0)
@@ -996,7 +1023,7 @@ class Element:
         sb2dx = 1800
         sb2dy = 2*guidespacing
 
-        e1 = Element('guide',x=x0,y=y0+guidespacing,parent=self) # input shg
+        e1 = Guide(x=x0,y=y0+guidespacing,parent=self) # input shg
         e1.addonchannel(modefilterx,width=mfshg).addontaper(taperx,outwidth=couplerwidth)
         e1.addonsbend(sbendlength,vgroovepitch-couplergap).addonchannel(couplerx).addontaper(taperx,outwidth=width)
         e1.addnote(e1.x-couplerx/2,e1.y,gap=float2string(couplergap)+' gap')
@@ -1009,12 +1036,12 @@ class Element:
         sb2x = 2*taperx + sbendlength + couplerx + gx
         sb2y = vgroovepitch + guidespacing - 2*couplergap
 
-        e0 = Element('guide',x=x0,y=y0,parent=self) # aux ir (output ir)
+        e0 = Guide(x=x0,y=y0,parent=self) # aux ir (output ir)
         e0.addonchannel(modefilterx,width=mfir).addontaper(taperx,outwidth=couplerwidth)
         e0.addonsbend(sb2x-sb2dx,sb2y-sb2dy).addonsbend(sb2dx,sb2dy).addonchannel(couplerx).addonchannel(sbendlength)
         e0.addontaper(taperx,outwidth=mfir).addonchannel(modefilterx,width=mfir)
 
-        e2 = Element('guide',x=x0,y=y0+guidespacing+vgroovepitch,parent=self) # input ir
+        e2 = Guide(x=x0,y=y0+guidespacing+vgroovepitch,parent=self) # input ir
         e2.addonchannel(modefilterx,width=mfir).addontaper(taperx,outwidth=couplerwidth)
         e2.addonchannel(sbendlength).addonchannel(couplerx).addonsbend(sb2dx,sb2dy).addonsbend(sb2x-sb2dx,sb2y-sb2dy)
         e2.addontaper(taperx,outwidth=mfir).addonchannel(modefilterx,width=mfir)
@@ -1038,7 +1065,7 @@ class Element:
         #print 'mfsbendin,mfsbendout,mfchannelin,mfchannelout',mfsbendin,'\_/->',mfsbendout,mfchannelin,'-->',mfchannelout,'gratingonsbend',gratingonsbend,'gap',couplergap,'couplerx',couplerx,'period',period
         print('modefilters:',mfsbendin,'\_/->',mfsbendout,',',mfchannelin,'-->',mfchannelout,'gap:',couplergap,'L0:',couplerx,'couplerguidewidth',couplerwidth,'period:',period,'criticaldimension:',couplergap-couplerwidth)
 
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         x0,y0 = e.x,e.y
         e.info.inputmodefilter,e.info.outputmodefilter,e.info.guidewidth = mfsbendin,mfsbendout,width
         e.addonchannel(modefilterx,width=mfsbendin).addontaper(taperx,outwidth=couplerwidth)
@@ -1053,7 +1080,7 @@ class Element:
         e.addonsbend(sbendlength,vgroovepitch-couplergap).addonchannel(couplerx).addonsbend(sbendlength,-vgroovepitch+couplergap)
         e.addontaper(taperx,outwidth=mfsbendout).addonchannel(modefilterx)
 
-        ee = Element('guide',parent=self,guidespacing=vgroovepitch)
+        ee = Guide(parent=self,guidespacing=vgroovepitch)
         ee.info.inputmodefilter,ee.info.outputmodefilter,ee.info.guidewidth = mfchannelin,mfchannelout,width
         ee.addonchannel(modefilterx,width=mfchannelin).addontaper(taperx,outwidth=couplerwidth)
         ee.addonsbend(sbendlength,0).addonchannel(couplerx).addonsbend(sbendlength,0)
@@ -1080,7 +1107,7 @@ class Element:
         #print('modefilters:',mfsbendin,'\_/->',mfsbendout,',',mfchannelin,'-->',mfchannelout,'gap:',couplergap,'L0:',couplerx,'couplerguidewidth',couplerwidth,'period:',period,'gratingonsbend:',gratingonsbend,'criticaldimension:',couplergap-couplerwidth)
         assert couplerx>50, 'coupler length in µm'
 
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         x0,y0 = e.x,e.y
         e.info.inputmodefilter,e.info.outputmodefilter,e.info.guidewidth = mfsbendin,mfsbendout,width
         e.addonchannel(modefilterx,width=mfsbendin).addontaper(taperx,outwidth=width)
@@ -1096,7 +1123,7 @@ class Element:
         if gratingonsbend:
             e.addlayergrating(period,gx=gx+(taperx+modefilterx)*extendpoling*(0==mfsbendout),x0=gx0,y0=e.y)
 
-        ee = Element('guide',parent=self,guidespacing=vgroovepitch)
+        ee = Guide(parent=self,guidespacing=vgroovepitch)
         ee.info.inputmodefilter,ee.info.outputmodefilter,ee.info.guidewidth = mfchannelin,mfchannelout,width
         ee.addonchannel(modefilterx,width=mfchannelin).addontaper(taperx,outwidth=width)
         ee.addonsbend(sbendlength,0).addontaper(taperx,outwidth=couplerwidth).addonsbend(precouplerx,0)
@@ -1117,6 +1144,7 @@ class Element:
         print('  g'+f.info.guidenumbers+' criticaldimension:'+str(couplergap-couplerwidth))
         return self
     def addonsplittapersbend(self,dx,dy,taperx,sx,sy,inwidth=None,outwidth=None,x=None,y=None,reverse=False,note=True):
+        # starts with tight ROC at wide guide width, then in middle of s-bend tapers down to smaller guide width, and finishes s-bend with loose ROC
         assert dx>0
         x = x if x is not None else self.x
         y = y if y is not None else self.y
@@ -1169,7 +1197,7 @@ class Element:
         precouplergap = 10+couplergap
         precouplerx = 3400
         assert couplerx>50, 'coupler length in µm'
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         x0,y0 = e.x,e.y
         e.info.inputmodefilter,e.info.outputmodefilter,e.info.guidewidth = mfsbendin,mfsbendout,width
         e.addonchannel(modefilterx,width=mfsbendin).addontaper(taperx,outwidth=width)
@@ -1193,7 +1221,7 @@ class Element:
         if gratingonsbend:
             e.addlayergrating(period,gx=gx+(taperx+modefilterx)*extendpoling*(0==mfsbendout)-e.info.splittaperdx,x0=gx0+e.info.splittaperdx,y0=e.y)
 
-        ee = Element('guide',parent=self,guidespacing=vgroovepitch)
+        ee = Guide(parent=self,guidespacing=vgroovepitch)
         ee.info.inputmodefilter,ee.info.outputmodefilter,ee.info.guidewidth = mfchannelin,mfchannelout,width
         ee.addonchannel(modefilterx,width=mfchannelin).addontaper(taperx,outwidth=width)
         ee.addonsbend(sbendlength,0).addontaper(taperx,outwidth=couplerwidth).addonsbend(precouplerx/2,0)
@@ -1222,14 +1250,12 @@ class Element:
             e.addtext(text+extratext,x,0)
         e.translate(x0,y0)
         return self
-    def addguidelabels(self,chipx=None,text=None,x0=None,y0=None,extratext='',dy=-25,skip=[],polingfill=0): # self is the group, self.parent is the chip
+    def addguidelabels(self,chipx=None,text=None,x0=None,y0=None,extratext='',dy=-25,skip=[],polingfill=0,repx=5000,xlast=None): # self is the group, self.parent is the chip
         chipx = chipx if chipx is not None else self.finddefaultinfo('chiplength') # self.parent.info.chipx
         text = text if text is not None else self.finddefaultinfo('chipid')+'-G'+str(self.finddefaultinfo('groupcount'))+'.1'  # self.parent.info.chipid+'-G'+str(self.parent.info.groupcount)+'.1'#+str(self.info.guidenumber) # G1.1,G2.1
         minfeature = self.finddefaultinfo('minfeature',fail=False) or self.finddefaultinfo('maskres')
         x0 = x0 if x0 is not None else self.x
         y0 = y0 if y0 is not None else self.y
-        repx = 5000
-        xlast = None
         if polingfill:
             g = Element('metric',parent=self)
         for x in range(repx,int(chipx)-repx+1,repx):
@@ -1271,9 +1297,9 @@ class Element:
         for xi,xj in zip(barstarts,barends):
             g.addrect( x0+xi,y0-gy/2., xj-xi,gy )
         return self
-    def addbragggrating(self,width,dx,period=8,dc=1,enddc=None,angle=0.2,x0=0,y0=0):
-        if False==self.finddefaultinfo('braggangle'):
-            angle = 0
+    def addbragggrating(self,width,dx,period=8,dc=1,enddc=None,x0=0,y0=0):
+        angle = self.finddefaultinfo('braggangle',fail=False)
+        angle = angle if angle is not None else 0
         if dev: period,angle = periodmag*period,arctan(periodmag*tan(angle))
         barcount = int(ceil(1.*dx/period))
         period = 1.*dx/barcount
@@ -1310,7 +1336,7 @@ class Element:
                 assert 0, 'test implementation of this note'
         return self
     def addbragg(self,width,dc,period=None,dx=None):
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         dx = dx if dx is not None else self.finddefaultinfo('chiplength')
         period = period if period is not None else self.finddefaultinfo('braggperiod')
         e.info.guidewidth = width
@@ -1328,7 +1354,7 @@ class Element:
         return self
     def addbraggmodefilter(self,width,dx=None,indc=1,outdc=1,period=None,modefilterx=None,taperx=None,swapdcs=False):
         if swapdcs: indc,outdc = outdc,indc
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if indc: e.info.inputbraggdutycycle = indc
         if outdc: e.info.outputbraggdutycycle = outdc
         if not indc and not outdc: modefilterx,taperx = 0,0
@@ -1341,11 +1367,11 @@ class Element:
         e.info.guidewidth = width
         e.addonbraggmodefilter(width,period,dx,indc,outdc,modefilterx,taperx)
         return self
-    def addtaperedbragggrating(self,inwidth,outwidth,dx,period=8,dc=1,enddc=None,angle=0.2,x0=0,y0=0,note=True):
+    def addtaperedbragggrating(self,inwidth,outwidth,dx,period=8,dc=1,enddc=None,x0=0,y0=0,note=True):
         x,y = self.x,self.y
-        if False==self.finddefaultinfo('braggangle'):
-            angle = 0
-        if dev: period,angle = periodmag*period,atan(periodmag*tan(angle))
+        angle = self.finddefaultinfo('braggangle',fail=False)
+        angle = angle if angle is not None else 0
+        if dev: period,angle = periodmag*period,np.arctan(periodmag*np.tan(angle))
         barcount = int(ceil(1.*dx/period))
         period = 1.*dx/barcount
         g = Element('bragg',parent=self)
@@ -1394,7 +1420,7 @@ class Element:
         return self
     def addtaperedbraggmodefilter(self,mfwidth,width,dx=None,indc=1,outdc=1,braggperiod=None,modefilterx=None,taperx=None,swapdcs=False):
         if swapdcs: indc,outdc = outdc,indc
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if indc: e.info.inputbraggdutycycle = indc
         if outdc: e.info.outputbraggdutycycle = outdc
         # if not indc and not outdc and mfwidth==width: modefilterx,taperx = 0,0
@@ -1410,7 +1436,7 @@ class Element:
         return self
     def addtaperedbraggmodefilterwithshg(self,mfwidth,width,dx=None,indc=1,outdc=1,braggperiod=None,modefilterx=None,taperx=None,swapdcs=False,polingperiod=None):
         if swapdcs: indc,outdc = outdc,indc
-        e = Element('guide',parent=self)
+        e = Guide(parent=self)
         if indc: e.info.inputbraggdutycycle = indc
         if outdc: e.info.outputbraggdutycycle = outdc
         # if not indc and not outdc and mfwidth==width: modefilterx,taperx = 0,0
@@ -1717,13 +1743,14 @@ class Element:
                 e.adddashedline(xx[0]/2+xx[-1]//2, y, xx[-1]-xx[0], 100, 10000, 1000, xaxis=1, maxradius=maxradius)
             for x in xx:
                 e.adddashedline(x, yy[0]/2+yy[-1]//2, 100, yy[-1]-yy[0], 10000, 1000, xaxis=0, maxradius=maxradius)
-    def addsplitter(self,width,pitch,mfin=0,mfout=0,mzlength=None,sbendlength=None,splitradius=0,singlemfout=False,taperx=None,mftaperx=None):
+    def addsplitter(self,width,pitch,mfin=0,mfout=0,mzlength=None,sbendlength=None,splitradius=0.5,singlemfout=False,taperx=None,mftaperx=None):
         dx = self.finddefaultinfo('chiplength')
         modefilterx = self.finddefaultinfo('modefilterlength')
         taperx = self.finddefaultinfo('taperlength') if taperx is None else taperx
         mftaperx = self.finddefaultinfo('taperlength') if mftaperx is None else mftaperx
         sbendlength = sbendlength if sbendlength is not None else self.finddefaultinfo('sbendlength')
-        e = Element('ysplitter-guide',parent=self)
+        # e = Element('ysplitter-guide',parent=self)
+        e = Guide('ysplitter-guide',parent=self)
         e.y += pitch/2 # self.y lines up with first arm, e.y will line up with input
         e.info.inputmodefilter,e.info.outputmodefilter,e.info.guidewidth = mfin,mfout,width
         cx = (dx -(2*modefilterx*(mfin>0) + 2*mftaperx*(mfin>0) + 2*taperx + 2*sbendlength + mzlength))/2 if mzlength is not None else modefilterx
@@ -1782,7 +1809,8 @@ class Element:
         modefilterx = self.finddefaultinfo('modefilterlength')
         taperx = self.finddefaultinfo('taperlength')
         sbendlength = sbendlength if sbendlength is not None else self.finddefaultinfo('sbendlength')
-        e = Element('scurve-guide',parent=self)
+        # e = Element('scurve-guide',parent=self)
+        e = Guide('scurve-guide',parent=self)
         e.info.guidewidth = width
         if mf and not mf==width: e.info.inputmodefilter,e.info.outputmodefilter = mf,mf
         dx = (dx - (2*modefilterx*(mf>0) + 2*taperx*(mf>0) + 2*sbendcount*sbendlength))/2.
@@ -1804,7 +1832,8 @@ class Element:
         modefilterx = self.finddefaultinfo('modefilterlength')
         taperx = self.finddefaultinfo('taperlength')
         sbendlength = sbendlength if sbendlength is not None else self.finddefaultinfo('sbendlength')
-        e = Element('machzehnder-guide',parent=self)
+        # e = Element('machzehnder-guide',parent=self)
+        e = Guide('machzehnder-guide',parent=self)
         # e.y += pitch/2 # self.y lines up with first arm, e.y will line up with input
         e.y = e.y+pitch/2 if y is None else y # self.y lines up with first arm, e.y will line up with input
         e.info.guidewidth = width
@@ -1889,7 +1918,8 @@ class Element:
         dx = self.finddefaultinfo('chiplength')
         taperx = self.finddefaultinfo('taperlength')
         sbendlength = sbendlength if sbendlength is not None else self.finddefaultinfo('sbendlength')
-        e = Element('machzehnder-guide',parent=self)
+        # e = Element('machzehnder-guide',parent=self)
+        e = Guide('machzehnder-guide',parent=self)
         e.y = e.y+pitch/2 if y is None else y # self.y lines up with first arm, e.y will line up with input
         e.info.guidewidth = width
         if mf and not mf==width: e.info.inputmodefilter,e.info.outputmodefilter = mf,mf
@@ -1929,15 +1959,14 @@ class Element:
         self.addnote(dx/2,yflat/2,dy=100,note=f'↕ {yflat} µm')
         return self
     def addtestchip(self):
-        # label = ' '+self.info.chipid+' '+chiptype+' '+str(targetgap)+'G'+str(targetwidth)+'W'
+        # label = ' '+self.info.chipid
         # self.addtext(self.finddefaultinfo('maskname')+label,x=2000,y=200)
         # self.addtext(self.finddefaultinfo('maskname')+label,x=self.finddefaultinfo('chiplength')/2,y=200)
-        # elabel = self.finddefaultinfo('electrodemaskname')+label
         self.info.guidespacing = 30
         self.info.groupspacing = 60
         # self.adddiceguides()
-        self.y += 300
-        g1 = Element('group',parent=self).addguidelabels(dy=-50)
+        self.y += 500
+        g1 = Group(parent=self).addguidelabels(dy=-50)
         g1.addchannel(5)
         for wi in [5,6,7,8]:
             g1.addchannel(wi)
@@ -1948,19 +1977,35 @@ class Element:
         self.adddiceguides()
         self.addmetric(x=100,y=400,dx=25,dy=25,nx=2,ny=6)
         self.addtext('chip:'+self.info.chipid,x=500,y=400,scale=2)
-        self.y += 1000
-
-        g1 = Element('group',parent=self).addguidelabels(dy=-50)
-        g1.addchannel(2)
-        g1.addchannel(3)
-        g1.addchannel(4)
-
-        g2 = Element('group',parent=self).addguidelabels(dy=-50)
-        g2.addmodefilter(2,modefilterx=1000,taperx=2500)
-        g2.addmodefilter(3,modefilterx=1000,taperx=2500)
-        g2.addmodefilter(4,modefilterx=1000,taperx=2500)
-
+        self.y += 500
+        g1 = Group(parent=self).addguidelabels(dy=-50)
+        for wi in [2,3,4]:
+            g1.addchannel(wi)
+        g2 = Group(parent=self).addguidelabels(dy=-50)
+        for wi in [2,3,4]:
+            g2.addmodefilter(wi,inwidth=6,modefilterx=1000,taperx=2500)
+        g3 = Group(parent=self,showguidespacing=True,showgroupspacing=True).addguidelabels(dy=-50)
+        for wi in [4,6,8]:
+            g3.addmodefilter(wi,inwidth=2,outwidth=2,modefilterx=1000,taperx=2500)
         self.addscalenote(poling=False)
+        return self
+    def addtestelectrodewaveguidechip(self):
+        label = ' '+self.info.chipid
+        self.addtext(self.finddefaultinfo('maskname')+label,x=2000,y=200)
+        self.addtext(self.finddefaultinfo('maskname')+label,x=self.finddefaultinfo('chiplength')/2,y=200)
+        self.info.guidespacing = 50
+        self.info.groupspacing = 100
+        self.adddiceguides()
+        self.y += 500
+        g1 = Group(parent=self).addguidelabels(dy=-50)
+        g1.addchannel(5)
+        for wi in [5,6,7,8]:
+            g1.addchannel(wi)
+
+        # elabel = self.finddefaultinfo('electrodemaskname')+label
+        L,dx = 10000,40000
+        self.addcpwelectrode(L,10,20,100,200,dx,1000,xin=2000,xout=2000)
+
         return self
     def addcarrots(self,length,gap,xoffset=0,size=200):
         sx,sy,stext = size,size/4,200
@@ -2023,7 +2068,7 @@ class Element:
         p = np.array(c1[-2])/2+np.array(c0[2])/2; w = (np.array(c1[-2])-np.array(c0[2]))[0]; g.addnote(p[0],p[1],ingap=w)
         p = np.array(c2[-2])/2+np.array(c0[-3])/2; w = -(np.array(c2[-2])-np.array(c0[-3]))[0]; g.addnote(p[0],p[1],ingap=w)
         return self
-    def addcpwelectrode(self,L,gap,hot,fangap,fanhot,dx,dy,xin=0,xout=0,id=None):
+    def addphidlcpwelectrode(self,L,gap,hot,fangap,fanhot,dx,dy,xin,xout,id=None):
         g = Element('electrode',layer='MASK',parent=self)
         import phidl,phidls
         label = f"{self.info.chipid if id is None else id} {L/1000:g}mm {gap}-{hot}-{gap}"
@@ -2053,6 +2098,35 @@ class Element:
         self.addnotesframe(margin=(0,0),size=(dx,dy))
         # print('L,hot,gap,gnd,dx,dy',L,hot,gap,gnd,dx,dy)
         return self
+    def addcpwelectrode(self,ghg,y0=500,L=1000,label='',scaleifdev=False):
+        dx,dy = self.finddefaultinfo('chiplength'),self.finddefaultinfo('chipwidth')
+        r = dy-y0
+        g = Element('electrode',layer='ELECTRODE',parent=self)
+        from waves import Wave
+        gapsvshots = {
+            # 50Ω designs from mglnapemask(gridsize=4000,gridnum=360000,iters=3,xghg=900)
+            '23-10-23': Wave([23,35.9684,50.3551,65.6613,81.6565,114.677,148.62,183.064,217.792,252.655,287.57,322.458,357.273,390.177],[10,15,20,25,30,40,50,60,70,80,90,100,110,119.481]),
+            '51-20-51': Wave([51,66.516,82.7314,116.2,150.595,185.499,220.679,255.999,291.365,326.699,361.96,390.659],[20,25,30,40,50,60,70,80,90,100,110,118.169]),
+            '16-10-16': Wave([16,24.7612,35.1649,46.8643,59.5648,87.1243,116.633,147.452,179.044,211.188,243.706,276.472,309.376,342.345,375.326,383.494],[10,15,20,25,30,40,50,60,70,80,90,100,110,120,130,132.48]),
+            '36-20-36': Wave([36,48.0163,61.0539,89.3424,119.615,151.223,183.614,216.565,249.89,283.459,317.161,350.925,384.688,384.95],[20,25,30,40,50,60,70,80,90,100,110,120,130,130.078]),
+            }
+        gvh = gapsvshots[ghg]
+        hot,gap = int(round(gvh.x[0])), int(round(gvh[0]))
+        fhot,fgap = int(round(gvh.x[-1])), int(round(gvh[-1]))
+        dg,fdg = 0.5*hot+0.5*gap, 0.5*fhot+0.5*fgap
+        cc = cpwelectrode(L=L,r=r,dx=L+2*r+4000,dy=dy,gvhwave=gvh,mirrory=True)
+        # g.addpolys(cc)
+        cc = [reorient(c,0) for c in cc]
+        g.addinsettext(cc,label,x0=0.5*L,y0=r-200,scale=2,justify='center',scaleifdev=scaleifdev)
+        for x in [L*a/8 for a in [1,3,5,7]]:
+            g.insetshapes(checkerboardmetric(dx=2*hot,dy=hot,nx=4,ny=8,x=x,y=r-200,centered=True))
+        for x in (-r,L+r):
+            g.addnote(x,r-50,inwidth=fhot).addnote(x-fdg,r-50,ingap=fgap).addnote(x+fdg,r-50,ingap2=fgap)
+        for x in (100,):
+            g.addnote(x,0,ewidth=hot).addnote(x,-dg,egap=gap).addnote(x,dg,egap=gap)
+        for x in (L-100,):
+            g.addnote(x,0,ewidth2=hot).addnote(x,-dg,egap2=gap).addnote(x,dg,egap2=gap)
+        g.translate(0.5*dx-0.5*L,dy-r)
     def addgrating(self,barstarts,barends,y0,gy):
         g = Element('grating',layer='MASK')
         for x0,x1 in zip(barstarts,barends):
@@ -2068,6 +2142,39 @@ class Element:
     def getpickle(name):
         with open('pickle/'+name+'.pickle', 'rb') as f:
             return pickle.load(f)
+class Group(Element):
+    def __init__(self,name='group',layer=None,parent=None,showgroupspacing=None,showguidespacing=None,**kwargs):
+        assert parent, 'Group must have parent'
+        assert parent.info.groupspacing, 'Group groupspacing must be defined in parent'
+        super(Group,self).__init__(name,layer,parent,x=None,y=None,**kwargs)
+        parent.info.groupcount = self.info.groupnumber = getattr(parent.info,'groupcount',0) + 1
+        if parent.info.groupcount>1: parent.y += parent.info.groupspacing
+        if showgroupspacing or (2==self.info.groupnumber and showgroupspacing is None): # show group spacing note between g1.last and g2.1
+            parent.addnote(parent.x+1000,parent.y-parent.info.groupspacing/2,separation=parent.info.groupspacing)
+        if showguidespacing is not None:
+            self.info.showguidespacing = showguidespacing
+        self.x,self.y = parent.x,parent.y
+class Guide(Element):
+    def __init__(self,name='guide',layer=None,parent=None,x=None,y=None,guidespacing=None,width=None,**kwargs):
+        assert parent, 'Guide must have parent'
+        assert isinstance(parent,Group), 'Guide must have Group as parent'
+        super(Guide,self).__init__(name,layer,parent,x=x,y=y,**kwargs)
+        guidespacing = guidespacing if guidespacing is not None else self.finddefaultinfo('guidespacing')
+        parent.info.guidecount = getattr(parent.info,'guidecount',0) + 1
+        parent.info.groupnumber = getattr(parent.info,'groupnumber',1)
+        if parent.info.guidecount>1:
+            parent.y = parent.parent.y = parent.y + guidespacing
+            # both group and chip are updated with y position of current waveguide
+            # chip.y should probably be updated when adding wide guides (spltter,mz) but isn't yet
+        showspacing = (2==parent.info.guidecount and 1==parent.info.groupnumber)
+        if hasattr(parent.info,'showguidespacing'):
+            showspacing = (2==parent.info.guidecount and parent.info.showguidespacing)
+        if showspacing: # show guide spacing note between g1.1 and g1.2
+            parent.addnote(parent.x+1000,parent.y-guidespacing/2,separation=guidespacing)
+        self.info.guidenumber = f"{parent.info.groupnumber}.{parent.info.guidecount}"
+        self.x,self.y = parent.x,parent.y
+        if width is not None:
+            self.width = width
 class Chip(Element):
     # def __init__(self,parent,name=None,layer=None,**kwargs): #  chip must have parent
     def __init__(self,name=None,layer=None,parent=None,x=None,y=None,id=None,**kwargs):
@@ -2333,19 +2440,6 @@ class Submount(Chip):
         self.addrect(0.5*(xsubmount-xchip)-0.5*xbar,0,xbar,ysubmount)
         self.addrect(0.5*(xsubmount+xchip)-0.5*xbar,0,xbar,ysubmount)
         return self
-
-    def addcpwelectrode(self,L,gap,hot,fangap,fanhot,dx,dy,xin=0,xout=0,id=None):
-        g = Element('electrode',layer='MASK',parent=self)
-        import phidl,phidls
-        label = f"{self.info.chipid if id is None else id} {L/1000:g}mm {gap}-{hot}-{gap}"
-        D = phidls.uclacpw(L=L,gap=gap,hot=hot,fangap=fangap,fanhot=fanhot,chipx=dx-xin-xout,chipy=dy,label=label,mirror=True)
-        D.movex(xin)
-        polys = phidls.layerpolygons(D,layers=[0],closed=True)
-        g.addpolys(polys)
-        for k,s,(x,y) in D.notes:
-            g.addnote(x=x+xin,y=y,dy=20,**{k:s})
-        return self
-
 def roundoffcorners(ps,r=20):
     def rightangle(a,b,c):
         if np.array_equal(a,b) or np.array_equal(b,c): return False # numpy.allclose if tolerance
@@ -2520,9 +2614,12 @@ def standardonelayerlithomask(draftfolder,chipnum=None,chipmap=False):
     print('maskfiles',maskfiles)
     for line in ['']+maskinfo+maskfiles+['']:
         print(line)
+    return mask
 
 if __name__ == '__main__':
     standardonelayerlithomask('draft 1')
+    # standardonelayerlithomask('draft 1',chipmap=[5])
+    # print(standardonelayerlithomask('draft 1')==standardonelayerlithomask('draft 2'))
     # gen(standardonelayerlithomask)('draft 1')
     # standardtwolayerlithomask('draft 1')
     # standardtwolayerlithomask('draft 1',chipmap=True)
