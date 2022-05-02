@@ -45,7 +45,7 @@ e.plot();
 ![png](README_files/README_6_0.png)
 
 
-Elements can also contain **Notes**, which are the building blocks for creating annotated wafer maps and chip maps.
+Elements can also contain **Notes**, which are the building blocks for creating annotated wafer maps and chip maps. (Notes are added to a separate NOTES layer.)
 
 
 ```python
@@ -123,7 +123,7 @@ print('chipcount:',mask1.info.chipcount);
     chipcount: 2
     
 
-Information can be specified for an element using it's **info** attribute. It is a python dictionary that can be accessed via 'dot notation'. Subelements can then use this for 'default' values. For instance, a default chip width and length can be specified for the whole mask, and width and length do not have to be specified for each chip individually. A method such as **adddiceguides** will then look for a default value of **chipwidth** and **chiplength** if not explicitly specified and use those values for drawing the dice guide dimensions.
+Information can be specified for an element using it's **info** attribute. It is a python dictionary that can be accessed via 'dot notation'. Subelements can then use this for 'default' values. For instance, a default chip width and length can be specified for the whole mask, and width and length do not have to be specified for each chip individually. A method such as **adddiceguides()** will then look for a default value of **chipwidth** and **chiplength** if not explicitly specified and use those values for drawing the dice guide dimensions.
 
 When the mask is rendered values in the info attribute for all elements and subelements will be saved in text format for permanent reference, so be liberal in adding any information that may be useful at a later date.
 
@@ -177,7 +177,7 @@ mask2.plot(scale=2);
 ![png](README_files/README_19_1.png)
 
 
-Typical **info** attributes:
+Some common **info** attributes:
 
 
 ```python
@@ -198,6 +198,95 @@ chip.info.modefilterlength = 3000
 chip.info.taperlength = 2500
 ```
 
+### Guide and Group
+
+A waveguide is typically added to a Group (group of waveguides) which will automate keeping track of how many waveguide groups there, the number of waveguides in each group. Waveguides in the first Group are named 'G1.1', 'G1.2', etc. In the second group they are named 'G2.1', 'G2.2', etc and so on. 
+
+The spacing between groups and the waveguides in a group can also be automated by setting **chip.info.groupspacing** and  **chip.info.guidespacing** for the **chip** that contains the Groups. The position of Group or Guide is determined by the current value of **chip.y** which is incremented appropriately each time a new Group or Guide is added.
+
+Groups will be named 'group', 'group2', 'group3', ... if not given a name explicitly. (Similarly for Guides.) 
+
+On-mask labeling of a Group (including metrics, longitudinal position, chip id, and guide name) can be added by calling **addguidelabels()**.
+
+
+```python
+mask3 = Element(name='mask3',layer='MASK')
+mask3.info.font = 'c:/Windows/Fonts/arial.ttf'
+mask3.info.chiplength = 3000
+mask3.info.chipwidth = 500
+mask3.info.minfeature = 10.0
+chip = Chip(parent=mask3)
+chip.info.groupspacing = 150
+chip.info.guidespacing = 50
+chip.adddiceguides(repx=200)
+chip.y = 150
+g1 = Group(parent=chip).addguidelabels(dy=-25,repx=1000)
+g1.addchannel(10)
+g1.addchannel(20)
+g2 = Group(parent=chip).addguidelabels(dy=-25,repx=1000)
+g2.addmodefilter(30,inwidth=10,outwidth=20,modefilterx=1000,taperx=100)
+g2.addmodefilter(20,inwidth=40,outwidth=0,modefilterx=500,taperx=100)
+chip.plot(scale=3,notes=False);
+```
+
+
+![png](README_files/README_24_0.png)
+
+
+### Building a waveguide
+
+A **Guide** can be built up in pieces in an automated manner. A particular guide **wg** internally uses **wg.x** and **wg.y** to keep track of the end of the waveguide, to determine where the next piece should be added on, and **wg.width** to specify the current width of the guide.
+
+
+```python
+mask4 = Element(name='mask4',layer='MASK')
+mask4.info.font = 'c:/Windows/Fonts/arial.ttf'
+mask4.info.chiplength = 3000
+mask4.info.chipwidth = 1000
+mask4.info.minfeature = 10.0
+chip = Chip(parent=mask4)
+chip.info.groupspacing = 200
+chip.info.guidespacing = 100
+chip.adddiceguides(repx=200)
+chip.y = 200
+g = Group(parent=chip).addguidelabels(dy=-50,repx=1000)
+
+wg1 = Guide(parent=g)
+wg1.width = 20
+wg1.addonchannel(dx=1000).addonchannel(width=40,dx=500).addonchannel(dx=1500)
+
+wg2 = Guide(parent=g)
+wg2.addonchannel(width=20,dx=300)
+wg2.addontaper(outwidth=40,dx=100).addontaper(outwidth=20,dx=100)
+wg2.addonsbend(dx=100,dy=50).addonsbend(dx=100,dy=-50)
+wg2.addontaperedbraggmodefilter(mfwidth=20,width=40,period=20,dx=1500,indc=0.5,outdc=0.1,modefilterx=300,taperx=200)
+wg2.addonchannel(dx=300)
+wg2.addonbragg(dx=500,period=50,dc=1.0,enddc=0.1,note=False)
+
+wg3 = Guide(parent=g)
+wg3.info.braggangle = 0.05
+wg3.addontaperedbraggmodefilter(20,40,period=20,dx=3000,indc=0.5,outdc=0.1,modefilterx=300,taperx=500)
+
+wg4 = Guide(parent=g)
+wg4.addondoublesbend(dx=1500,dy=50,width=10,poshalf=0,neghalf=0,splitradius=15,outputside=False)
+wg4.addondoublesbend(dx=1500,dy=50,width=10,poshalf=0,neghalf=0,splitradius=15,outputside=True)
+
+wg5 = Guide(parent=g,width=50)
+wg5.addonchannel(dx=500)
+wg5.addonmodefilter(width=10,dx=2500,inwidth=50,outwidth=100,modefilterx=100,taperx=50)
+
+# wg6 = Guide(parent=g,width=50)
+# wg6.addonchannel(700)
+# wg6.addonsplittapersbend(dx=600,dy=150,taperx=300,sx=400,sy=30,inwidth=50,outwidth=20,reverse=False).addonchannel(400)
+# wg6.addonsplittapersbend(dx=600,dy=150,taperx=300,sx=400,sy=30,inwidth=50,outwidth=20,reverse= True).addonchannel(700)
+
+chip.plot(scale=3,notes=False);
+```
+
+
+![png](README_files/README_27_0.png)
+
+
 ### Building a litho mask
 
 ### Wafer map
@@ -216,3 +305,28 @@ chip.info.taperlength = 2500
 ### Fiducials and metrics
 
 ### Submount mask
+
+notes
+
+<!-- self.x,self.y -->
+<!-- That is used sort of like a marker of internal position for the element, think of it like a cursor maybe. It is used to keep track of the current position within the element for example the position of the current waveguide in the group or the current location of the end of the waveguide when building a waveguide. -->
+
+<!-- relative vs absolute coordinates? -->
+
+<!-- we make a separate dxf file for each layer to avoid any ambiguity. This is done by calling savedxf.savemask() with both list of layers e.g. [‘MASK’, ’ELECTRODE’] and list of mask names for each layer e.g. [‘Apr22A’,’Apr22B’] (always leaving out ‘NOTES’). -->
+
+<!-- 
+When a note is created it is attached to a subelement first, so ee has two new subelements (a and b) each of which has a non-empty notes attribute (a.notes and b.notes)
+
+Here are three different ways to print them:
+
+    print(ee.elems[0].notes)
+    print(ee.elems[1].notes)
+
+    print(ee.findsubelem('shapes-note').notes)
+    print(ee.findsubelem('shapes-note2').notes)
+
+    for n in ee.subnotes():
+        print(n)
+ -->
+
