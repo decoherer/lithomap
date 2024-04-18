@@ -5,9 +5,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 from numpy import pi,sqrt,sin,cos,tan,arcsin,arccos,arctan,arctan2,log,exp,floor,ceil
 
-import os,sys
-# sys.path.insert(1, '../sell') # insert at 1, 0 is the script path (or '' in REPL)
-# from waves import V,Vs,Wave
+import sys
+from wavedata import V,Vs,Wave
 from grating import grating
 
 # TODO:
@@ -69,9 +68,33 @@ class OrderedDictFromCSV(OrderedDict): # https://stackoverflow.com/a/43566576
 def chipidtext(n,rows):
     nx,ny = n//rows,n%rows
     return f'{ny+1:02d}'+'ABCDEFGHIJ'[nx]
+def svg2pdf(file):
+    from reportlab.graphics import renderPDF
+    from svglib.svglib import svg2rlg
+    assert '.svg'==file[-4:]
+    from time import process_time
+    timer = process_time()
+    outfile = file[:-4]+'.pdf'
+    drawing=svg2rlg(file)
+    renderPDF.drawToFile(drawing,outfile)
+    print(f'  svg2pdf in:"{file}" out:"{outfile}" elapsed:{process_time()-timer:.3f}sec')
+def pdf2png(file):
+    import fitz
+    assert '.pdf'==file[-4:]
+    from time import process_time
+    timer = process_time()
+    doc=fitz.open(file)
+    page=doc.load_page(0)
+    zoom=3
+    mat=fitz.Matrix(4,4)
+    pix=page.get_pixmap(matrix=mat)
+    outfile=file[:-4]+'.png'
+    pix.save(outfile)
+    print(f'  pdf2png in:"{file}" out:"{outfile}" elapsed:{process_time()-timer:.3f}sec')
 def svg2png(file):
     assert '.svg'==file[-4:]
-    from time import process_time,sleep
+    import os
+    from time import process_time
     # os.environ['path'] += r';c:\Octave\Octave-4.4.1\bin' # location of libcairo-2.dll, https://stackoverflow.com/a/60220855/12322780
     os.environ['path'] += r';C:\Program Files\Inkscape\bin' # location of libcairo-2.dll, https://stackoverflow.com/a/60220855/12322780
     # doesn't work in 32 bit python, try: https://weasyprint.readthedocs.io/en/latest/install.html#windows
@@ -80,7 +103,7 @@ def svg2png(file):
         # svgtext = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12" y2="16"/></svg>"""
         svgtext = f.read()
     timer = process_time()
-    outfile = file[:-4]+'.png'
+    outfile = file[:-4]+'.svg.png'
     cairosvg.svg2png(bytestring=svgtext,write_to=outfile)
     print(f'  svg2png in:"{file}" out:"{outfile}" elapsed:{process_time()-timer:.3f}sec')
 def float2string(x,digits=8):
@@ -108,7 +131,21 @@ def dxftest(filename='dxftest.dxf'):
         dxfattribs={'color':16,'layer':'NOTES','height':25,'style':'arial'}
         space.add_text(note, dxfattribs=dxfattribs).set_pos((x,y), align='CENTER')
     drawing.saveas(filename)
-def comparedxf(file1,file2,importall=False,finalize=False):
+def loaddxf(file,verbose=False):
+    import ezdxf
+    doc = ezdxf.readfile(file)
+    msp = doc.modelspace()
+    polylines = msp.query('POLYLINE')
+    def polyline2poly(polyline):
+        return [list(vertex.dxf.location)[:2] for vertex in polyline.vertices]
+    if verbose:
+        print(len(polylines),'polylines')
+        for polyline in polylines:
+            print('Points in polyline:',polyline2poly(polyline))
+    lines = msp.query('LINE')
+    assert 0==len(lines)
+    return [polyline2poly(polyline) for polyline in polylines]
+def comparedxf(file1,file2,importall=False,finalize=False,outfile='merged.dxf'):
     import ezdxf
     from ezdxf.addons import Importer
     source = ezdxf.readfile(file1)
@@ -130,10 +167,10 @@ def comparedxf(file1,file2,importall=False,finalize=False):
         # This is ALWAYS the last & required step, without finalizing the target drawing is maybe invalid!
         # This step imports all additional required table entries and block definitions.
         importer.finalize()
-    target.saveas('merged.dxf')
+    target.saveas(outfile)
 def defaultpadboundarys(gx,padcount):
     return {i:gx*i for i in range(padcount)},{i:gx*(i+1) for i in range(padcount)}
-def oldfindpadboundarys(barstarts,barends,gx):
+def oldoldfindpadboundarys(barstarts,barends,gx):
     n,starts,ends = 0,{},{}
     starts[0] = barstarts[0]
     for i in range(len(barstarts)):
@@ -141,12 +178,24 @@ def oldfindpadboundarys(barstarts,barends,gx):
             ends[n],starts[n+1],n = barends[i-1],barstarts[i],n+1
     ends[n] = barends[-1]
     return starts,ends
-def findpadboundarys(barstarts,barends,gx,padcount):
+def oldfindpadboundarys(barstarts,barends,gx,padcount):
     starts,ends = defaultpadboundarys(gx,padcount)
     n = int(barstarts[0]//gx)
     for i in range(len(barstarts)):
         if barstarts[i]>=gx*(n+1):
             ends[n],starts[n+1],n = barends[i-1],barstarts[i],n+1
+    ends[n] = barends[-1]
+    return starts,ends
+def findpadboundarys(barstarts,barends,gx,padcount):
+    def padnum(x): return int(x//gx)
+    starts,ends = [np.nan]*padcount,[np.nan]*padcount
+    n = padnum(barstarts[0])
+    starts[n] = barstarts[0]
+    for i in range(1,len(barstarts)):
+        if padnum(barstarts[i])>=n+1:
+            ends[n] = barends[i-1]
+            n = padnum(barstarts[i])
+            starts[n] = barstarts[i]
     ends[n] = barends[-1]
     return starts,ends
 def averageperiod(barstarts,barends,ignoregaps=True):
@@ -165,8 +214,10 @@ def makepadtext(mask,chipid,period,dc,padcount):
         assert len(s)==n
         return s
     tt = ['↓'+s for s in roundtondigits(period,4)] # print ' '.join(tt)
-    tperiod,tdc = ('%.4f'%period)[:6],str(int(round(dc*100)))+'%'
+    # tperiod,tdc = ('%.4f'%period)[:6],str(int(round(dc*100)))+'%'
+    tperiod,tdc = ('%.4f'%period)[:5],str(int(round(dc*100)))+'%'
     padtext = [mask,chipid+'',tperiod,tdc,tt[0],tt[1],tt[2],tt[3],tperiod,tdc]
+    padtext = padtext if 5<padcount else [mask,chipid+'',tperiod,tdc,str(int(round(period)))]
     while len(padtext)<padcount: padtext += [mask,chipid+'',tperiod,tdc]
     return padtext[:padcount]
 def svgtest():
@@ -241,17 +292,21 @@ def textcurves(ss,vertical=False,skew=0,screencoordinates=False,cursor=(0,0)):
     # x height = 60, A height = 84, y descent = 20, vertical advance = 84+42
     def skewcurve(ps):
         return [(x+skew*y,y) for x,y in ps]
-    def addpointtocurve(p,qs):
-        return [tuple([pi+qi for pi,qi in zip(p,q)]) for q in qs] # return [tuple(v(p)+v(q)) for q in qs]
     curves = []
     if ss[0] in lettercurves:
         curves += [addpointtocurve(cursor,skewcurve(curve)) for curve in lettercurves[ss[0]]] # curves += [v(cursor)+v(skewcurve(curve)) for curve in lettercurves[ss[0]]]
         cursor = (cursor[0]+letterwidth[ss[0]],cursor[1])
     return curves+textcurves(ss[1:],False,skew,screencoordinates,cursor)
+def addpointtocurve(p,qs):
+    return [tuple([pi+qi for pi,qi in zip(p,q)]) for q in qs] # return [tuple(v(p)+v(q)) for q in qs]
 def curveboundingbox(curve):
     def depth(g):  # print depth(textcurves('abc')[0][0]),textcurves('abc')[0][0],depth(textcurves('abc')[0][0][0]),textcurves('abc')[0][0][0]
         import collections
-        return 1 + max(depth(item) for item in g) if isinstance(g,collections.Iterable) else 0
+        try:
+            collectionsabc = collections.abc
+        except AttributeError:
+            collectionsabc = collections
+        return 1 + max(depth(item) for item in g) if isinstance(g,collectionsabc.Iterable) else 0
     curve = [p for p in curve if p is not None]
     if not curve: return None
     if 3==depth(curve): # if curve is actually list of curves, flatten first
@@ -311,6 +366,44 @@ def signedpolyarea(c):
     xs,ys = zip(*c)
     xs,ys = np.array(xs),np.array(ys)
     return 0.5*(np.dot(xs,np.roll(ys,1))-np.dot(ys,np.roll(xs,1))) # https://stackoverflow.com/questions/24467972/calculate-area-of-polygon-given-x-y-coordinates
+def centerofmass(poly,area=False):
+    n = len(poly) - 1  # since the first and last vertices are the same
+    A,cx,cy = 0,0,0
+    for i in range(n):
+        x_i, y_i = poly[i]
+        x_next, y_next = poly[i+1]
+        common = x_i * y_next - x_next * y_i
+        A += common
+        cx += (x_i + x_next) * common
+        cy += (y_i + y_next) * common
+    A /= 2
+    cx,cy = cx/(6*A),cy/(6*A)
+    return ((cx,cy),A) if area else (cx,cy)
+
+def ramerdouglaspeucker(c, epsilon): # https://stackoverflow.com/q/37946754/12322780
+    # eliminate the unnecessary points in a curve
+    # epsilon: remove point if it is within distance epsilon of the line after removal
+    def point_line_distance(point, start, end):
+        if (start == end):
+            return  np.sqrt((point[0]-start[0])**2 + (point[1]-start[1])**2)
+        else:
+            n = abs( (end[0]-start[0])*(start[1]-point[1]) - (start[0]-point[0])*(end[1]-start[1]) )
+            d = np.sqrt( (end[0]-start[0])**2 + (end[1]-start[1])**2 )
+            return n / d
+    dmax,index,i = 0.0,0,1
+    for i in range(1, len(c)-1):
+        d = point_line_distance(c[i], c[0], c[-1])
+        if d > dmax :
+            index,dmax = i,d
+    if dmax >= epsilon :
+        results = ramerdouglaspeucker(c[:index+1], epsilon)[:-1] + ramerdouglaspeucker(c[index:], epsilon)
+    else:
+        results = [c[0], c[-1]]
+    return results
+def reducecurve(c,maxdist):  # removes all points in a curve if removing it deviates by less than maxdist
+    c = ramerdouglaspeucker(c,maxdist)
+    if polyarea(c)==0: print('reducecurve generated zero-area curve')
+    return c
 def compresscurve(c,maxangle):  # maxangle in degrees # removes all points in a curve if the angle at that point exceeds maxangle
     c0 = c                      # for a better algorithm see https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm
     for angle in np.linspace(180,maxangle,10): # remove largest angles first
@@ -320,8 +413,14 @@ def compresscurve(c,maxangle):  # maxangle in degrees # removes all points in a 
             return cosθ<cosφ
         n,cosφ = 1,np.cos(angle/180*np.pi)
         while len(c)-1<=n:
-            if c[n-1]==c[n] or c[n]==c[n+1] or exceedsangle(c[n-1],c[n],c[n+1]):
-                c = c[:n]+c[n+1:]
+            # if c[n-1]==c[n] or c[n]==c[n+1] or exceedsangle(c[n-1],c[n],c[n+1]):
+            #     c = c[:n]+c[n+1:]
+            try:
+                if c[n-1]==c[n] or c[n]==c[n+1] or exceedsangle(c[n-1],c[n],c[n+1]):
+                    c = c[:n]+c[n+1:]
+            except Exception as e:
+                print(c)
+                raise e
     if len(c)==len(c0): return c
     return compresscurve(c,maxangle)
 def isinsideboundingbox(x,y,bb):
@@ -331,6 +430,10 @@ def clipped(x,y,bb):
     return np.clip(x,bb[0],bb[0]+bb[2]), np.clip(y,bb[1],bb[1]+bb[3])
 def deleteduplicatepoints(c):
     return [p for i,p in enumerate(c) if 0==i or not c[i]==c[i-1]]
+def roundoffcurve(c,d=0.001):
+    def roundoffp(p):
+        return [int(round(x/d))*d for x in p]
+    return [roundoffp(p) for p in c]
 def clipcurve(c,bb):
     c = [clipped(*p,bb) for p in c]
     return deleteduplicatepoints(c)
@@ -351,8 +454,9 @@ def cropped(c,bb):
                 cs.append(ci)
             ci = []
     if len(ci):
-        cs.append(ci)    
-    return cs
+        cs.append(ci)
+    # return cs
+    return [c for c in cs if 1<len(c)]
 def cropcurves(cs,bb):
     return [ci for c in cs for ci in cropped(c,bb)]
 def curvetowave(c):
@@ -372,10 +476,10 @@ def autocadcolor(n):
 def curvelength(xs,ys):
     dxs,dys = np.diff(xs),np.diff(ys)
     return sum(np.sqrt(dxs**2+dys**2))
-def sbend(dx,dy):
+def sbend(dx,dy,res=None):
     k,a = np.pi/dx,dy/2
     rocinum = 1/k**2/a #print('bendx:',dx,'bendy:',dy,'roc(um):', 1/k**2/a,'roc(cm):', 1/k**2/a/10000,'bendx = sqrt( pi^2/2 * bendy * roc )',sqrt( pi**2/2 * bendy * roc))
-    xs = np.linspace(0,dx,101)
+    xs = np.linspace(0,dx,res if res is not None else 101)
     ys = a*(1-np.cos(k*xs))
     return xs,ys,rocinum,curvelength(xs,ys)
 def splittapersbend(dx,dy,taperx,sx,sy):
@@ -431,12 +535,33 @@ def closest(a,b): # return index of closest pair of points in curves a and b
                 d0,m0,n0 = dd(p,q),m,n
     # print(m0,n0,a[m0],b[n0],dd(a[m0],b[n0]))
     return m0,n0
-def acontainsb(a,b): # True is all points of b are inside and not touching a
+def hastouchingcurves(cc,radius=-1e-9):
+    for i in range(len(cc)-1):
+        for j in range(i+1,len(cc)):
+            if atouchesb(cc[i],cc[j],radius):
+                return (i,j)
+    return False
+def atouchesb(a,b,radius=-1e-9): # don't use, replace with matplotlib.path.Path(a).intersects_path(b,filled)!
+    # may not catch pathological cases, use atouchesb(a,upsamplecurve(b,n)) if worried
+    insidea = matplotlib.path.Path(a).contains_points(b,radius=radius)
+    assert len(b)==len(insidea)
+    return any(insidea) and not all(insidea)
+def acontainsb(a,b): # True is all points of b are inside and not touching a # see also contains_path
     return all(matplotlib.path.Path(a).contains_points(b))
 def reorient(c,positiveorientation=True):
     if not positiveorientation:
         return c if 0<signedpolyarea(c) else c[::-1]
     return c[::-1] if 0<signedpolyarea(c) else c
+def combinepolys(cc,sort=True): # connect all polys into one single poly in which polys are connected by zero width line
+    cc = sorted(cc) if sort else cc
+    assert 0<len(cc)
+    def threadbeads(a,b): # returns single poly consisting of bead a and bead b connected by zero width thread
+        assert 0<=signedpolyarea(a)*signedpolyarea(b), 'polys must have same orientation to combine (try reorient)'
+        m,n = closest(a,b) # index of closest pair of points in curves a and b
+        return list(a[:m+1]) + list(b[n:]) + list(b[:n+1]) + list(a[m:])
+    if len(cc)==1:
+        return cc[0]
+    return combinepolys([threadbeads(cc[0],cc[1])]+cc[2:],sort=False)
 def eliminateholes(cc,showgap=False):
     # reduce outer and innerpolygons to single outer polygon
     # assumes inner and outer polygons have opposite signed area
@@ -458,11 +583,110 @@ def eliminateholes(cc,showgap=False):
         return cc
     an,bn = h
     assert -1==np.sign(signedpolyarea(cc[an])*signedpolyarea(cc[bn])), 'inner and outer curves must be opposite cw/ccw to combine (try reorient)'
-    def cutdonut(a,b): # asumes b is hole inside a (creating donut), returns replacement 'cut' donut 
+    def cutdonut(a,b): # assumes b is hole inside a (creating donut), returns replacement 'cut' donut 
         m,n = closest(a,b) # index of closest pair of points in curves a and b
         return list(a[:m+(0 if showgap else 1)]) + list(b[n:]) + list(b[:n+(0 if showgap else 1)]) + list(a[m:])
     cc[an] = cutdonut(cc[an],cc[bn])
     return eliminateholes([c for c in cc[:bn]+cc[bn+1:]],showgap)
+def intersectioncurves(a,b): # return a∩b as a list of curves (multiple curves are possible if b cuts a into pieces)
+    from shapely.geometry import Polygon,MultiPolygon
+    c = Polygon(a).intersection(Polygon(b))
+    if isinstance(c,MultiPolygon):
+        polygons = c.geoms
+    elif isinstance(c,Polygon):
+        polygons = [c]
+    else:
+        assert 0
+    return [[(x,y) for x,y in ci.exterior.coords] for ci in polygons]
+def differencecurves(a,b): # return a-b as a list of curves (multiple curves are possible if b cuts a into pieces)
+    from shapely.geometry import Polygon,MultiPolygon
+    c = Polygon(a).difference(Polygon(b))
+    if isinstance(c,MultiPolygon):
+        polygons = c.geoms
+    elif isinstance(c,Polygon):
+        polygons = [c]
+    else:
+        assert 0
+    return [[(x,y) for x,y in ci.exterior.coords] for ci in polygons]
+def unioncurves(polys): # return a∪b∪c... as a list of curves
+    from shapely.geometry import Polygon,MultiPolygon
+    from shapely.ops import unary_union
+    c = unary_union([Polygon(poly) for poly in polys])
+    if isinstance(c,MultiPolygon):
+        polygons = c.geoms
+    elif isinstance(c,Polygon):
+        polygons = [c]
+    else:
+        assert 0
+    return [[(x,y) for x,y in ci.exterior.coords] for ci in polygons]
+def selectpolys(polys,x=None,y=None,lesser=True,invert=False): # select all polys that don't extend past x (or y)
+    assert not (x is not None and y is not None)
+    def isvalid(ps):
+        if x is not None:
+            f = all([(p[0]<x  if lesser else x<p[0]) for p in ps])
+        else:
+            f = all([(p[1]<y  if lesser else y<p[1]) for p in ps])
+        return (not f) if invert else f
+    return [ps for ps in polys if isvalid(ps)]
+def xxmin(polys):
+    return min([p[0] for ps in polys for p in ps])
+def xxmax(polys):
+    return max([p[0] for ps in polys for p in ps])
+def yymin(polys):
+    return min([p[1] for ps in polys for p in ps])
+def yymax(polys):
+    return max([p[1] for ps in polys for p in ps])
+def xmin(poly):
+    return min([p[0] for p in poly])
+def xmax(poly):
+    return max([p[0] for p in poly])
+def xmid(poly):
+    return 0.5*xmin(poly) + 0.5*xmax(poly)
+def ymin(poly):
+    return min([p[1] for p in poly])
+def ymax(poly):
+    return max([p[1] for p in poly])
+def ymid(poly):
+    return 0.5*ymin(poly) + 0.5*ymax(poly)
+def sortpoly(ps,coord=0,reverse=False): # coord = 0 for x, 1 for y
+        assert ps[0]==ps[-1], 'polys must be closed'
+        i0 = sorted([(p[coord],i) for i,p in enumerate(ps[:-1])],reverse=reverse)[0][1]
+        return ps if 0==i0 else ps[i0:] + ps[1:i0+1] 
+def sortpolys(polys,coord=0,reverse=False,key='min'): # coord = 0 for x, 1 for y
+        def f(poly):
+            if key=='min':
+                return min([p[coord] for p in poly])
+            elif key=='max':
+                return max([p[coord] for p in poly])
+            elif key=='avg':
+                return centerofmass(poly)[coord]
+            else:
+                assert 0
+        return sorted(polys,key=f,reverse=reverse)
+def lineslicecurves(x,polys,vertical=True,ys=(),returnsegments=False,debug=False):
+    polys = unioncurves(polys) # find union in case of overlapping polygons
+    from shapely.geometry import Polygon, LineString, MultiLineString
+    line = LineString([(x,-1e9),(x,1e9)]) if vertical else LineString([(-1e9,x),(1e9,x)])
+    def sections(poly):
+        ii = Polygon(poly).intersection(line)
+        if debug:
+            print('ii.geom_type',ii.geom_type)
+        return [ii] if ii.geom_type == 'LineString' else list(ii.geoms) if ii.geom_type == 'MultiLineString' else ii
+    segs = [seg for poly in polys for seg in sections(poly)] # list of LineString
+    if debug:
+        Vs.plots(*[Vs(poly) for poly in polys],aspect=10)
+    ys = sorted(list(ys) + [y for seg in segs for y in seg.xy[1 if vertical else 0]])
+    if returnsegments:
+        return [(x,y) for x,y in zip(ys[0::2],ys[1::2])]
+    starts,ends = np.array(ys[:-1]),np.array(ys[1:])
+    widths,centers = ends-starts,0.5*starts+0.5*ends
+    centers = [((x,y) if vertical else (y,x)) for y in centers]
+    return widths,centers
+def dottedsegment(q0,q1,period,dc): # returns list of segments [[(x0,y0),(x1,y1)],...], period is adjusted to end with full "on" segment
+    v = np.array(q1)-np.array(q0)
+    d = np.sqrt((v**2).sum())
+    N = max(1, np.floor((d-dc*period)/period)) # adjusted period p = d/(N+dc)
+    return [[q0+v*i/(N+dc),q0+v*(i+dc)/(N+dc)] for i in range(int(N)+1)]
 def subtractcurves(a,b): # return a-b as a list of curves (multiple curves are possible if b cuts a into pieces)
     from shapely.geometry import Polygon,MultiPolygon
     # return Polygon(a) - Polygon(b) # return a-b as Shapely polygon or multipolygon
@@ -474,12 +698,24 @@ def subtractcurves(a,b): # return a-b as a list of curves (multiple curves are p
     else:
         assert 0
     return [[(x,y) for x,y in ci.exterior.coords] for ci in polygons]
+def polyrect(x0,y0,dx=None,dy=None,x1=None,y1=None,orient=+1):
+    if x1 is not None or y1 is not None:
+        return polyrect(x0,y0,x1-x0,y1-y0,orient=orient)
+    return [(x0,y0),(x0+dx,y0),(x0+dx,y0+dy),(x0,y0+dy),(x0,y0)] if +1==orient else [(x0,y0),(x0,y0+dy),(x0+dx,y0+dy),(x0+dx,y0),(x0,y0)]
+def centeredpolyrect(x0,y0,dx,dy,orient=+1):
+    return polyrect(x0-dx/2,y0-dy/2,dx,dy,orient=+1)
 def checkerboardmetric(dx,dy,nx=2,ny=8,x=0,y=0,centered=False):
     def rect(x,y,dx,dy):
         return [(x,y),(x+dx,y),(x+dx,y+dy),(x,y+dy),(x,y)]
     cc = [rect(x+i*dx,y-j*dy-dy,dx,dy) for i in range(nx) for j in range(ny) if 0==(i+j)%2]
-    return cc if not centered else [[(x-dx/2,y-dy/2) for x,y in c] for c in cc]
-
+    return cc if not centered else [[(x-dx*nx/2,y+dy*ny/2) for x,y in c] for c in cc]
+def advrlogo(x=0,y=0,scale=1):
+    cc = [[(147.4,91.4),(147.0,81.9),(140.9,87.8),(139.8,88.6),(146.3,81.1),(136.6,80.9),(136.6,80.9),(138.7,80.8),(138.7,80.7),(130.1,80.2),(116.8,79.2),(114.6,79.1),(113.9,82.6),(113.2,81.9),(113.8,81.6),(112.8,80.4),(112.7,79.9),(112.7,79.4),(113.9,77.8),(115.4,75.2),(116.5,74.2),(115.4,75.4),(115.1,76.1),(115.0,77.3),(115.2,77.5),(115.7,77.7),(123.4,78.7),(136.8,79.8),(141.8,80.4),(144.0,80.4),(146.1,80.2),(139.6,73.5),(147.0,79.6),(147.1,79.8),(146.6,80.2),(146.5,80.6),(146.6,81.0),(147.1,81.5),(147.1,81.5),(147.8,81.5),(148.3,81.0),(148.4,80.3),(147.9,79.8),(147.1,79.8),(147.0,79.6),(147.5,70.3),(147.5,70.3),(148.0,79.4),(154.7,73.2),(148.7,80.1),(158.3,80.3),(158.3,80.4),(148.6,81.1),(155.3,88.0),(148.0,82.0),(147.4,91.4)],[(92.9,86.3),(94.2,85.2),(95.1,84.2),(95.3,83.7),(95.4,82.5),(95.9,81.5),(96.0,81.5),(96.4,83.8),(96.6,86.0),(96.8,87.0),(97.3,88.1),(97.9,88.6),(99.4,88.7),(100.7,88.3),(101.6,87.8),(103.6,86.2),(106.0,84.9),(108.4,82.9),(109.2,81.7),(109.6,81.5),(110.4,81.5),(110.5,80.4),(111.4,78.1),(111.5,77.3),(111.5,75.8),(110.7,76.8),(110.5,78.1),(109.8,77.4),(109.4,76.9),(109.2,76.1),(109.4,75.5),(109.7,75.0),(110.4,74.5),(109.2,73.2),(110.5,72.1),(110.7,73.4),(111.1,74.1),(111.8,74.1),(112.8,73.2),(112.8,74.4),(113.9,74.4),(113.8,73.5),(114.0,73.0),(115.9,71.1),(116.1,70.7),(116.2,69.9),(116.3,69.5),(116.7,69.0),(117.4,68.5),(117.3,69.7),(116.3,71.0),(116.1,72.1),(115.2,73.2),(114.9,74.5),(112.8,75.7),(112.7,77.9),(111.6,79.3),(111.6,82.7),(112.6,82.2),(111.8,82.8),(109.8,83.7),(109.2,84.2),(108.2,85.4),(106.3,88.1),(105.8,88.7),(105.0,89.0),(104.0,89.2),(103.9,89.1),(104.4,89.1),(104.8,88.9),(105.1,88.5),(105.5,87.2),(106.3,85.5),(106.3,85.5),(107.1,85.1),(107.9,84.1),(108.4,83.1),(107.5,83.8),(104.1,86.7),(102.3,88.7),(103.9,89.1),(104.0,89.2),(103.2,89.2),(102.3,88.9),(100.8,90.1),(97.7,91.1),(97.3,90.6),(96.4,88.8),(94.2,87.6),(92.9,86.3)],[(174.1,78.2),(173.1,79.2),(171.8,81.7),(170.7,82.8),(169.4,81.6),(169.3,81.7),(169.2,80.9),(168.4,79.3),(167.7,79.8),(167.4,80.3),(167.4,80.7),(167.8,81.5),(167.8,82.1),(167.3,83.4),(167.3,83.8),(167.3,83.8),(168.6,82.2),(169.3,81.7),(169.4,81.6),(167.5,83.7),(167.2,83.9),(167.1,83.8),(166.2,82.2),(165.9,81.4),(165.9,80.9),(166.4,80.0),(166.4,79.5),(166.2,79.3),(165.7,79.3),(165.4,78.2),(165.1,78.6),(165.0,79.1),(165.2,80.4),(165.1,81.7),(165.8,82.7),(167.1,83.8),(167.1,83.8),(167.2,83.9),(166.9,83.8),(163.7,80.7),(162.6,79.4),(162.5,79.0),(162.3,77.8),(161.3,75.7),(161.2,74.5),(160.7,74.1),(159.0,73.3),(159.2,73.2),(159.8,73.5),(161.3,74.3),(161.3,74.3),(160.2,72.2),(160.2,71.1),(159.9,70.6),(159.2,70.0),(158.0,69.8),(157.8,69.8),(157.1,69.7),(156.6,69.3),(155.6,67.6),(155.5,69.0),(155.7,69.7),(156.4,70.2),(157.8,70.8),(157.8,70.8),(157.8,69.8),(158.0,69.8),(159.0,71.0),(159.0,72.6),(159.2,73.2),(159.0,73.3),(157.8,71.0),(155.5,69.7),(154.2,68.5),(154.3,68.4),(154.2,67.6),(153.8,66.8),(153.2,66.1),(152.3,65.3),(153.3,67.4),(152.5,67.4),(152.5,67.5),(154.3,68.4),(154.3,68.4),(154.2,68.5),(152.1,67.3),(151.3,66.4),(149.8,63.9),(148.3,62.6),(144.9,60.2),(140.8,58.1),(140.5,58.0),(140.0,58.1),(137.8,59.5),(137.2,60.4),(137.1,61.4),(137.0,61.3),(134.6,56.7),(132.5,56.6),(133.0,58.0),(133.5,58.7),(133.8,58.9),(134.8,59.0),(133.7,61.3),(137.0,61.3),(137.0,61.3),(137.1,61.4),(133.5,61.5),(128.9,62.7),(129.6,62.1),(131.2,61.3),(130.1,60.1),(131.1,60.1),(129.6,58.6),(128.9,57.7),(131.7,59.6),(127.7,55.4),(131.2,57.7),(131.3,56.5),(132.1,55.4),(128.9,51.8),(134.1,56.0),(134.5,56.3),(135.0,56.2),(135.5,55.9),(135.6,55.4),(135.2,54.7),(134.0,53.6),(133.6,53.0),(134.7,53.0),(134.6,51.9),(133.6,50.6),(135.2,51.4),(135.8,51.9),(136.4,52.7),(137.0,54.1),(137.9,53.3),(138.2,53.2),(138.3,55.4),(138.3,55.4),(140.4,54.3),(138.2,53.2),(137.9,53.3),(138.0,52.8),(137.3,51.3),(136.6,50.5),(133.5,48.3),(136.4,49.3),(137.1,49.4),(137.6,49.2),(138.6,48.7),(140.3,47.2),(141.4,47.0),(141.9,46.6),(142.4,45.6),(142.7,44.8),(142.5,44.4),(141.6,43.5),(144.1,44.5),(145.1,44.6),(148.7,42.3),(146.5,45.9),(147.5,47.2),(145.2,47.3),(144.0,48.3),(145.2,49.5),(143.0,49.5),(144.0,50.7),(141.5,52.3),(140.6,53.2),(140.5,53.8),(140.5,55.3),(140.4,55.7),(139.7,56.3),(139.6,56.6),(139.3,56.6),(137.1,56.6),(138.1,57.8),(138.3,58.8),(138.3,58.8),(139.3,56.6),(139.6,56.6),(139.7,57.0),(140.1,57.4),(140.5,57.6),(140.8,57.5),(144.4,54.7),(142.8,55.5),(146.1,52.0),(142.8,53.1),(143.5,52.3),(147.0,49.7),(148.5,48.4),(149.2,48.2),(150.8,48.3),(148.6,45.9),(150.8,46.9),(152.0,45.9),(155.3,42.6),(149.8,44.7),(160.2,40.0),(156.6,42.8),(154.7,44.6),(153.5,46.0),(150.8,49.7),(147.5,53.1),(147.5,53.2),(146.4,54.2),(150.6,54.8),(150.6,54.8),(148.4,53.6),(147.5,53.2),(147.5,53.1),(150.9,54.1),(154.3,53.1),(152.0,51.8),(156.4,52.9),(154.3,51.6),(153.2,50.6),(156.5,51.7),(154.5,49.9),(153.5,49.1),(152.6,48.7),(152.6,48.5),(158.3,44.0),(156.7,44.8),(161.4,40.0),(160.3,42.3),(166.0,40.0),(161.6,43.4),(169.5,42.3),(169.5,42.4),(159.2,44.8),(157.9,45.9),(156.4,46.7),(156.4,46.8),(159.1,47.1),(158.2,48.0),(158.1,48.3),(158.2,48.6),(159.9,50.2),(160.5,50.5),(161.4,50.6),(160.4,52.9),(160.2,53.8),(160.4,54.8),(161.4,57.6),(161.7,57.8),(162.2,57.8),(164.9,57.6),(166.2,57.1),(167.2,56.4),(167.6,55.8),(168.0,54.8),(168.0,53.8),(167.8,53.0),(167.4,52.3),(166.8,51.8),(164.7,50.6),(167.9,51.7),(168.5,51.6),(169.4,50.6),(170.1,49.5),(170.5,48.3),(170.7,47.0),(171.1,46.5),(171.8,45.9),(172.7,47.7),(173.0,48.6),(172.9,50.5),(172.5,51.9),(172.5,52.4),(172.8,52.9),(174.0,54.1),(174.2,55.4),(175.1,56.4),(175.3,56.8),(175.5,57.8),(175.3,60.2),(174.8,59.7),(174.4,58.7),(174.1,57.8),(174.0,57.0),(173.9,56.7),(173.4,56.2),(171.8,55.5),(171.8,56.6),(170.7,56.6),(170.7,58.0),(170.5,59.0),(170.2,59.6),(169.5,60.1),(170.6,62.5),(171.8,60.1),(171.8,63.7),(172.9,63.7),(172.9,60.1),(174.1,61.4),(174.3,62.5),(175.3,63.1),(176.4,63.6),(177.6,62.6),(176.4,65.0),(175.7,64.3),(175.3,64.0),(174.9,64.1),(174.5,64.5),(174.3,64.9),(174.3,65.1),(175.2,66.2),(174.6,66.2),(174.6,66.3),(175.8,66.6),(177.3,67.2),(180.1,69.0),(181.0,69.7),(178.1,68.8),(180.8,71.6),(182.5,73.6),(184.2,76.2),(184.5,76.9),(184.6,78.0),(184.6,78.1),(184.4,76.8),(183.7,75.8),(181.9,73.0),(178.2,69.2),(177.8,68.6),(176.8,68.1),(174.4,66.2),(170.7,62.7),(169.5,63.6),(168.5,62.8),(165.8,61.4),(165.8,61.3),(167.0,61.3),(166.0,59.0),(161.5,57.9),(157.2,55.0),(156.0,54.5),(155.1,54.3),(151.5,54.8),(151.5,54.9),(154.4,55.1),(155.5,55.5),(156.2,56.0),(159.1,59.1),(156.1,57.6),(154.1,56.7),(151.0,55.8),(150.2,55.6),(150.2,55.5),(149.8,55.5),(149.9,55.4),(146.3,54.4),(143.9,55.7),(144.1,55.9),(142.9,56.3),(140.8,57.7),(142.3,58.2),(144.8,59.9),(143.3,58.4),(143.0,57.8),(143.2,57.5),(144.5,56.1),(144.8,55.5),(145.3,55.5),(144.7,56.3),(144.2,57.2),(144.1,57.7),(144.3,58.1),(146.0,59.9),(146.4,60.1),(147.5,60.3),(149.2,61.3),(150.8,62.5),(145.8,60.5),(153.1,64.8),(155.5,67.1),(155.4,66.0),(154.4,64.9),(154.2,63.7),(152.2,61.5),(155.5,63.7),(155.6,63.8),(155.8,65.1),(156.7,67.4),(156.8,68.4),(157.5,69.0),(159.0,69.6),(159.0,69.6),(158.9,68.5),(157.9,67.2),(157.6,65.9),(156.9,65.0),(155.6,63.8),(155.5,63.7),(155.5,62.5),(160.1,66.0),(160.4,67.6),(162.3,69.5),(162.6,70.8),(163.7,72.2),(163.7,74.3),(164.6,73.3),(164.7,70.9),(167.2,70.9),(164.9,73.4),(164.0,75.0),(163.8,75.6),(164.0,76.0),(164.7,76.8),(164.8,77.9),(166.0,76.8),(165.6,77.8),(166.8,77.6),(167.6,78.0),(168.2,79.0),(168.3,79.0),(168.2,78.3),(167.7,77.3),(167.1,76.6),(166.3,76.2),(165.9,75.5),(166.9,74.7),(167.1,74.3),(167.2,73.3),(168.2,72.1),(168.2,71.3),(167.8,70.6),(172.3,73.2),(172.1,72.9),(171.4,71.7),(170.5,70.6),(166.9,67.1),(159.2,59.2),(164.4,63.4),(167.3,65.2),(168.5,66.4),(170.5,69.5),(171.4,70.6),(173.7,72.8),(174.4,73.1),(175.3,73.2),(174.9,75.1),(174.9,75.9),(175.2,76.5),(176.2,74.3),(176.8,76.6),(176.8,78.7),(177.2,80.0),(177.1,80.5),(176.7,81.5),(176.7,82.2),(177.2,82.9),(177.8,84.1),(178.8,85.1),(181.1,82.7),(182.2,85.4),(183.4,87.4),(184.5,85.1),(185.7,86.4),(185.9,87.7),(186.6,88.8),(184.8,90.9),(184.8,90.9),(187.4,89.2),(188.8,87.9),(189.0,87.3),(188.8,86.7),(188.0,85.1),(188.0,83.2),(187.8,82.5),(186.5,80.3),(184.6,78.1),(184.6,78.0),(185.1,78.6),(189.1,82.6),(189.2,81.0),(188.9,80.1),(186.6,76.7),(184.3,74.5),(183.5,73.5),(182.9,72.3),(181.9,69.3),(181.2,67.9),(181.1,67.4),(181.3,66.9),(182.9,65.3),(183.1,64.9),(183.0,64.6),(181.8,63.3),(181.0,61.3),(183.4,63.6),(186.8,64.9),(185.6,61.4),(184.5,58.9),(186.0,60.3),(186.9,61.6),(187.7,64.0),(188.0,64.8),(189.8,66.6),(190.2,67.2),(190.2,67.8),(189.4,69.3),(189.5,70.0),(190.2,70.9),(192.1,72.5),(192.7,73.5),(192.7,74.5),(191.4,73.4),(190.1,71.8),(189.3,70.0),(189.2,70.0),(189.2,73.3),(189.1,73.3),(188.3,71.9),(188.0,70.9),(188.1,68.4),(188.0,67.7),(187.6,67.1),(186.6,66.6),(185.8,66.3),(186.8,68.5),(185.7,71.0),(185.6,71.0),(185.6,67.4),(184.1,68.9),(183.5,69.6),(183.5,70.2),(184.5,73.1),(185.3,73.8),(187.2,74.9),(188.0,75.6),(188.4,76.4),(189.2,79.1),(190.2,80.2),(190.8,81.1),(191.5,82.6),(192.0,83.9),(192.3,83.7),(191.5,85.1),(190.6,85.2),(190.2,85.5),(189.2,87.5),(188.2,88.8),(186.6,90.0),(184.7,91.0),(184.0,90.9),(180.9,89.4),(179.9,88.7),(179.8,88.3),(179.8,86.9),(179.7,86.3),(177.5,83.9),(176.6,82.1),(174.7,79.4),(174.8,79.5),(174.9,79.5),(174.1,76.8),(174.1,74.5),(173.0,74.5),(173.0,76.9),(172.9,76.9),(172.9,75.0),(172.5,73.7),(171.6,73.1),(169.2,72.6),(168.4,71.1),(168.4,71.9),(168.7,72.3),(168.4,72.2),(168.4,74.1),(168.1,74.5),(167.2,74.5),(167.6,75.4),(168.0,75.8),(168.6,75.9),(169.2,75.7),(169.6,77.7),(169.6,78.0),(169.2,78.5),(169.2,78.7),(169.4,79.0),(170.2,79.1),(170.7,79.5),(170.8,80.0),(170.7,80.9),(171.0,81.2),(171.1,81.5),(170.9,82.5),(170.9,82.5),(171.8,81.5),(172.0,80.8),(171.7,80.1),(170.7,78.8),(170.4,78.0),(170.1,76.1),(169.9,73.3),(171.5,73.8),(170.9,73.4),(172.5,74.2),(172.3,74.3),(172.0,76.7),(173.5,78.0),(172.6,78.2),(173.0,78.9),(174.1,78.0),(174.8,79.5),(174.7,79.4),(174.1,78.2)],[(91.8,87.6),(91.7,86.7),(91.6,85.8),(90.8,84.3),(90.7,83.7),(90.4,83.7),(90.1,82.1),(89.6,80.4),
+             (89.5,79.3),(88.5,78.2),(89.6,82.3),(88.6,80.9),(88.4,80.1),(88.3,78.3),(87.1,76.5),(86.1,73.6),(85.9,72.2),(85.5,71.8),(84.1,71.2),(83.7,70.7),(83.6,68.0),(83.2,66.4),(82.6,65.2),(82.7,65.1),(83.4,66.7),(84.9,67.5),(85.0,70.9),(86.0,71.9),(86.0,71.9),(85.9,67.4),(85.2,66.7),(82.7,65.1),(82.6,65.2),(82.1,64.7),(82.7,62.5),(83.7,62.6),(83.7,62.6),(83.9,61.5),(84.8,60.2),(84.1,60.2),(83.7,60.3),(83.1,60.9),(82.6,61.6),(82.5,62.1),(82.7,62.5),(82.1,64.7),(80.4,63.9),(80.0,63.0),(78.3,61.8),(77.8,61.2),(76.9,59.3),(76.8,58.7),(76.8,57.0),(76.6,56.6),(76.3,56.1),(71.7,51.7),(69.6,49.8),(67.4,48.1),(66.4,47.1),(67.5,47.8),(77.8,55.3),(78.2,55.9),(78.1,56.8),(77.7,57.9),(77.1,58.8),(83.4,55.6),(83.8,55.5),(84.1,55.5),(85.5,56.4),(86.0,56.5),(86.4,56.3),(87.3,55.4),(88.3,54.7),(89.3,54.3),(89.8,54.5),(91.9,56.6),(89.9,58.8),(88.8,60.6),(88.4,62.0),(88.5,64.8),(89.2,64.0),(89.5,63.6),(89.6,61.3),(89.9,60.4),(90.4,59.4),(91.1,58.7),(92.9,57.7),(95.5,61.1),(96.4,62.6),(95.5,64.9),(98.8,63.8),(95.4,59.1),(95.3,57.9),(95.3,56.7),(96.2,54.8),(96.3,54.3),(96.0,53.7),(94.9,52.3),(93.8,50.0),(92.5,47.0),(91.8,44.7),(101.0,49.3),(105.1,50.9),(111.7,54.2),(113.9,54.2),(112.8,55.5),(113.9,56.6),(112.7,56.5),(111.5,56.1),(108.2,54.4),(108.8,56.7),(109.2,57.6),(110.2,58.4),(111.4,58.8),(115.4,59.0),(116.1,58.8),(116.6,58.3),(117.6,56.3),(120.3,53.5),(122.3,52.1),(125.5,50.6),(123.3,53.3),(122.1,55.4),(121.7,56.7),(121.1,60.4),(120.6,61.9),(120.2,62.6),(119.6,63.2),(119.6,60.2),(118.8,60.2),(118.5,60.5),(118.0,61.6),(117.5,63.5),(118.5,62.6),(118.6,64.3),(118.4,65.0),(116.0,67.7),(114.2,70.6),(113.8,70.8),(113.5,70.7),(110.4,68.6),(110.4,68.5),(111.5,68.2),(111.5,68.2),(109.6,65.6),(109.5,65.5),(110.5,64.5),(110.8,63.4),(110.5,62.1),(110.1,61.4),(109.5,60.9),(109.3,62.3),(108.5,64.2),(108.8,64.8),(109.5,65.5),(109.5,65.5),(109.6,65.6),(108.3,66.6),(107.3,65.7),(106.1,65.5),(104.9,64.5),(105.4,63.3),(106.1,63.7),(106.6,63.7),(107.0,63.5),(107.9,61.7),(107.8,61.1),(107.0,60.4),(107.0,60.4),(106.8,61.3),(106.4,62.0),(105.7,62.5),(104.8,62.7),(105.4,63.3),(104.9,64.5),(101.9,65.5),(101.0,65.9),(101.4,67.8),(103.5,66.3),(104.8,66.6),(106.2,66.5),(107.2,67.5),(109.4,66.8),(110.4,68.5),(110.4,68.6),(109.3,70.6),(108.4,71.8),(108.0,72.1),(106.8,72.3),(104.5,74.5),(104.4,73.5),(104.0,72.8),(103.3,72.3),(102.3,72.1),(102.3,74.5),(101.5,73.8),(101.1,73.2),(101.1,71.5),(100.9,70.9),(100.4,70.5),(99.5,70.1),(99.0,69.9),(98.6,70.0),(97.7,70.9),(96.7,73.1),(97.2,74.0),(98.9,75.7),(97.8,76.6),(97.3,76.7),(96.7,76.6),(96.3,74.7),(95.9,74.0),(95.4,73.4),(95.5,75.6),(97.6,78.0),(97.7,79.3),(96.7,78.3),(96.5,77.7),(96.4,77.0),(96.3,77.0),(95.4,78.2),(95.4,80.4),(95.0,79.9),(94.4,78.6),(94.1,77.0),(94.2,76.1),(94.4,75.5),(94.8,75.0),(95.3,74.5),(94.6,73.8),(94.3,73.2),(94.5,72.6),(95.1,71.5),(95.2,70.9),(94.9,70.5),(94.1,69.7),(96.3,68.5),(96.1,67.6),(95.3,65.1),(93.4,69.3),(91.7,72.0),(90.8,73.2),(89.4,73.5),(88.5,74.5),(90.7,75.5),(91.9,74.4),(92.8,77.4),(94.1,80.3),(94.2,81.0),(94.1,81.6),(92.8,83.4),(92.4,84.4),(92.0,85.8),(91.8,87.4),(92.9,86.4),(91.8,87.6)],[(186.8,86.4),(185.7,84.1),(183.3,85.2),(184.4,82.8),(184.5,80.4),(185.6,81.4),(185.8,82.7),(186.8,84.0),(186.9,85.1),(186.8,86.4)],[(181.0,81.6),(178.8,79.3),(178.6,78.0),(177.5,75.6),(180.3,80.0),(181.0,81.6)],[(182.2,81.6),(181.4,80.8),(181.0,80.4),(180.7,78.0),(180.4,76.9),(179.9,75.9),(179.3,75.4),(177.6,74.5),(177.2,73.9),(176.3,72.1),(174.1,69.7),(175.6,70.5),(176.9,71.4),(177.8,72.4),(178.7,74.3),(179.3,74.7),(180.7,75.4),(181.2,75.9),(182.1,77.8),(182.4,79.2),(183.4,80.4),(182.2,81.6)],[(104.5,78.1),(105.8,76.8),(105.8,77.9),(106.6,77.1),(107.0,76.9),(107.6,77.4),(108.0,78.2),(107.8,78.9),(107.2,80.0),(105.9,79.3),(104.5,78.1)],[(192.6,79.3),(191.5,78.0),(191.3,76.9),(190.2,75.6),(192.6,76.7),(192.6,75.6),(192.7,75.6),(193.9,78.1),(192.6,79.3)],[(196.7,78.7),(197.8,76.8),(199.4,73.5),(199.7,73.3),(200.5,73.2),(201.0,72.9),(202.1,71.9),(202.9,70.9),(203.8,69.2),(205.6,64.1),(206.2,63.0),(207.0,62.0),(209.0,60.1),(210.7,59.1),(212.3,58.9),(215.0,59.1),(211.5,62.4),(209.1,63.7),(207.9,64.8),(206.2,66.8),(203.3,70.7),(202.9,71.6),(202.3,73.6),(202.0,74.3),(201.7,74.5),(200.8,74.6),(200.5,74.8),(197.9,77.6),(196.7,78.7)],[(196.1,75.7),(194.7,74.0),(193.7,72.1),(194.9,73.1),(195.9,72.7),(198.4,70.9),(197.3,73.3),(196.3,74.4),(196.1,75.7)],[(41.0,31.0),(31.0,15.7),(28.7,13.6),(34.7,13.5),(35.5,13.8),(43.7,26.1),(45.5,28.5),(46.4,30.1),(50.6,29.4),(62.7,28.0),(62.1,30.4),(48.7,33.4),(55.3,43.5),(55.3,43.5),(62.1,30.4),(62.7,28.0),(63.3,27.9),(63.7,27.4),(64.1,26.8),(65.0,24.9),(69.1,16.9),(70.1,14.7),(70.5,14.1),(70.9,13.6),(84.2,13.6),(81.9,15.7),(75.8,26.7),(79.5,26.3),(83.3,26.2),(83.3,26.3),(81.3,26.8),(76.0,27.5),(75.3,27.7),(75.0,28.0),(62.4,50.5),(61.9,51.1),(60.9,51.3),(58.9,51.1),(50.9,51.1),(52.8,49.4),(52.9,49.2),(52.8,48.8),(43.9,35.3),(43.4,34.9),(41.0,35.4),(34.1,37.8),(31.0,39.0),(28.1,40.3),(25.2,42.1),(23.3,43.6),(22.2,45.0),(21.9,45.7),(21.9,46.3),(22.1,47.4),(22.9,48.8),(23.9,49.9),(25.4,51.3),(26.9,52.4),(29.3,53.9),(31.9,55.3),(34.5,56.5),(38.9,58.3),(44.3,60.3),(50.0,62.2),(57.0,64.4),(68.5,67.6),(84.1,71.3),(84.4,71.5),(84.8,72.2),(85.3,74.3),(82.9,74.0),(71.9,72.1),(59.0,69.7),(47.9,67.2),(37.0,64.1),(30.6,62.0),(26.3,60.4),(16.3,56.4),(12.8,54.7),(10.1,53.1),(7.5,51.4),(5.7,49.9),(4.5,48.5),(3.8,47.1),(3.5,45.5),(3.6,44.4),(4.0,43.4),(5.0,42.1),(6.4,40.9),(8.4,39.7),(11.4,38.3),(14.4,37.1),(20.5,35.2),(25.8,33.9),(36.0,31.7),(38.5,31.2),(41.0,31.0)],[(116.9,73.7),(117.6,72.4),(118.2,70.7),(118.4,69.6),(118.4,67.6),(118.9,66.3),(119.8,64.7),(121.4,63.2),(121.8,62.5),(121.9,61.7),(121.8,59.8),(122.0,59.1),(122.6,58.7),(124.8,57.9),(126.6,56.6),(125.4,59.1),(124.4,60.2),(124.3,62.6),(123.2,65.0),(123.6,65.3),(124.0,65.8),(124.3,66.4),(124.4,67.1),(127.2,64.1),(128.8,62.7),(127.7,64.0),(124.4,67.3),(123.5,67.8),(121.0,68.9),(119.8,69.7),(119.7,69.6),(121.7,68.2),(121.7,68.2),(120.8,66.2),(120.2,66.8),(119.8,67.6),(119.7,69.6),(119.8,69.7),(119.4,70.3),(118.4,72.3),(117.8,73.0),(116.9,73.7)],[(193.7,71.0),(192.7,68.8),(192.5,67.2),(191.6,65.5),(191.5,64.9),(191.9,64.3),(192.7,63.7),(193.6,64.7),(193.7,65.0),(193.6,65.5),(192.8,67.1),(194.8,66.0),(196.1,63.7),(196.1,66.2),(193.7,71.0)],[(155.2,57.5),(156.0,58.0),(157.4,59.5),(158.2,60.5),(159.5,62.8),(160.1,63.5),(161.0,64.1),(163.0,64.6),(163.8,65.0),(168.0,69.3),(168.3,69.7),(167.4,69.3),(165.9,68.3),(164.9,67.1),(164.0,65.5),(163.9,65.5),(164.8,68.6),(163.0,67.7),(163.3,68.0),(164.9,69.1),(167.8,70.5),(166.7,70.2),(163.9,68.6),(162.6,67.4),(159.6,64.5),(158.9,63.5),(158.1,61.0),(157.7,60.2),(155.2,57.5)],[(179.8,66.2),(178.7,63.8),(178.6,61.5),(176.3,60.1),(177.8,60.0),(178.5,60.1),(179.2,60.5),(179.7,61.2),(180.0,62.5),(180.9,63.5),(181.0,63.9),(180.6,65.0),(179.8,66.2)],[(189.1,64.9),(188.0,62.7),(187.8,61.1),(186.8,59.1),(185.6,57.7),(187.9,58.9),(187.9,56.6),(186.8,54.2),(189.0,55.3),(188.0,53.2),(187.9,51.1),(187.7,50.2),(187.1,49.1),(185.6,47.1),(187.5,48.1),(187.9,48.1),(188.3,48.0),(190.2,46.0),(190.3,46.1),(189.6,47.3),(189.3,48.2),(189.5,48.7),(190.3,49.5),(190.3,49.5),(191.1,48.7),(191.3,48.2),(191.1,47.4),(190.3,46.1),(190.2,46.0),(192.0,45.0),(192.6,44.6),(193.1,43.8),(193.7,42.3),(195.5,45.0),(196.0,46.0),(193.8,49.4),(192.6,49.7),(191.5,51.9),(190.3,50.8),(190.3,52.7),(190.5,53.1),(191.2,53.9),(191.5,54.4),(191.5,56.6),(192.4,59.2),(192.6,60.4),(191.8,63.0),(191.5,63.7),(190.7,64.3),(189.1,64.9)],[(215.7,58.4),(216.4,56.3),(217.1,55.2),(218.2,54.4),(220.1,53.2),(221.3,53.0),(221.6,52.8),(222.5,51.7),(223.8,49.5),(216.7,48.2),(216.7,48.1),(218.7,47.1),(219.8,46.9),(221.1,47.0),(223.4,47.6),(224.8,48.5),(226.1,48.3),(228.7,47.7),(227.4,48.5),(225.8,49.2),(225.3,49.4),(224.3,49.4),(224.0,49.6),(223.7,50.0),(223.0,52.6),(222.1,53.9),(220.8,55.0),(215.7,58.4)],[(176.3,57.8),(176.2,56.6),(175.3,55.5),(175.2,53.3),(174.1,51.9),(174.1,49.5),(176.3,53.0),(177.6,51.8),(176.7,54.1),(176.4,55.4),(177.6,55.4),(177.0,57.0),(176.3,57.8)],[(109.5,41.2),(109.5,31.0),(106.2,32.6),(103.7,33.5),(101.4,33.8),(97.7,33.7),(94.8,33.2),(92.2,32.3),(89.9,31.0),(88.2,29.4),(87.3,28.1),(86.5,26.1),(86.1,23.9),(86.3,21.7),(86.8,19.6),(87.5,18.2),(88.8,16.5),(90.2,15.2),(92.1,14.0),(94.1,13.2),(96.3,12.6),(99.6,12.4),(101.9,12.6),(105.2,13.4),(108.2,14.7),(106.7,17.7),(105.4,17.1),(103.8,16.7),(102.1,16.6),(100.2,16.8),(98.7,17.3),(97.4,17.9),(96.6,18.6),(95.8,19.7),(95.3,21.0),(95.0,22.9),(95.0,24.4),(95.3,25.8),(95.9,27.0),(96.8,28.0),(98.0,28.8),(99.6,29.4),(101.2,29.7),(101.2,29.7),(102.8,29.8),(104.0,29.7),(105.5,29.3),(106.6,28.9),(107.6,28.2),(108.4,27.4),(108.9,26.7),(109.4,25.5),(109.7,24.2),(109.7,22.8),(109.5,21.4),(109.1,20.1),(108.4,19.1),(107.6,18.3),(106.7,17.7),(108.2,14.7),(110.0,15.9),(110.0,12.9),(118.1,12.9),(118.1,41.2),(109.5,41.2)],[(159.8,33.4),(159.8,4.1),(169.5,4.1),(169.5,16.3),(172.3,16.4),(174.7,16.3),(176.5,16.0),(178.3,15.4),(179.5,14.7),(180.8,13.8),(183.6,11.4),(188.0,7.3),(190.1,5.1),(191.5,4.1),(192.7,3.9),(194.8,4.1),(203.1,4.1),(196.1,11.0),(193.0,13.7),(191.0,15.1),(189.6,15.9),(188.1,16.5),(186.6,16.9),(185.3,21.3),(183.0,21.1),(169.8,21.0),(169.4,21.0),(169.4,21.8),(169.5,28.5),(169.5,28.5),(181.9,28.6),(185.8,28.2),(187.4,27.6),(188.6,26.8),(189.0,26.2),(189.2,25.6),(189.2,24.4),(188.7,23.3),(187.8,22.3),(186.7,21.7),(185.3,21.3),(186.6,16.9),(191.1,17.8),(194.1,18.7),(195.5,19.5),(196.5,20.1),(197.5,20.9),(198.3,22.0),(198.8,22.9),(199.1,24.1),(199.2,25.4),(199.1,26.6),(198.7,27.7),(198.1,28.7),(197.3,29.6),(195.9,30.8),(194.3,31.7),(192.6,32.4),(190.1,33.0),(187.6,33.3),(183.6,33.5),(159.8,33.4)],[(122.6,33.4),(125.8,28.0),(135.4,13.1),(135.7,12.9),(136.2,12.8),(142.5,12.8),(143.2,12.9),(143.7,13.4),(152.9,28.0),(155.3,31.4),(156.3,33.4),(148.4,33.5),(147.6,33.5),(140.9,22.2),(140.1,20.6),(139.6,19.5),(139.4,19.5),(137.5,23.1),(132.3,32.3),(131.6,33.3),(122.6,33.4)],[(23.7,6.2),(23.7,4.5),(155.1,4.5),(155.1,6.2),(23.7,6.2)],]
+    cc = [[(px,-py) for px,py in c] for c in cc]
+    cc = scalecurves(cc,x=x,y=y,scale=scale,center=True)
+    return [reorient(c) for c in cc]
+    # return [addpointtocurve((x,y),reorient(c)) for c in cc]
 class Path():
     def __init__(self,xys,width,normal=None,cw=False): # width=3 or width=[2,3,4] or width = lambda u:1+u
         self.width = width if callable(width) else (np.array(width if hasattr(width, '__len__') else [width]*len(xys)).reshape(-1,1))
@@ -556,6 +792,8 @@ class Arch(Path):
         p = Path(self.xys.copy(),width=self.width,cw=self.cw)
         p.r,p.φ0,p.φ1 = self.r,self.φ0,self.φ1
         return p
+def linease(x):
+    return x
 def sinease(x):
     return sin(x*pi/2)**2
 def cosease(x): # cosease = sinease
@@ -564,34 +802,115 @@ def cornerease(x,n=2):
     return 0.5*( 1 + np.sign(2*x-1) * np.abs(2*x-1)**(1/n) )
 def powerease(x,n=2):
     return np.where(x<0.5,0.5*abs(2*x)**n,1-0.5*abs(2-2*x)**n)
-def cpwelectrode(L=100,r=200,dx=1000,dy=400,gvhwave=None,α=0.01,mirrory=False):
+def flatinease(x,fease,flatfraction=0.5):
+    x0,x1 = flatfraction,1-flatfraction
+    return np.where(x<x0, 0, fease((x-x0)/x1))
+def flatoutease(x,fease,flatfraction=0.5):
+    x0,x1 = 1-flatfraction,flatfraction
+    return np.where(x<x0, fease(x/x0), 1)
+def flatinoutease(x,fease,infraction=0.25,outfraction=0.25):
+    assert infraction+outfraction<1
+    def func(x):
+        return flatoutease(x,fease,outfraction/(1-infraction))
+    return flatinease(x,func,infraction)
+def cpwelectrode(L=100,r=200,dx=1000,dy=400,gvhwave=None,α=0.01,diceinset=25,mirrory=False):
     gvhwave = gvhwave if gvhwave is not None else Wave([20,150],[10,30])
     h0,h1 = gvhwave.x[0],gvhwave.x[-1]
     def ease(u):
         return sinease(u)
-        # return powerease(u,9)
     def fhot(u):
         return h0+ease(u)*(h1-h0)
     def fghg(u):
         return fhot(u) + 2*gvhwave(fhot(u))
-    A = Arch(r,pi/2,pi,width=fhot,minangle=α)
-    B = Path([(0,0),(L,0)],width=fhot(0))
-    C = Arch(r,pi/2,0,width=fhot,p0=[L,0],minangle=α)
-    AA = Arch(r,pi/2,pi,width=fghg,minangle=α)
-    BB = Path([(0,0),(L,0)],width=fghg(0))
-    CC = Arch(r,pi/2,0,width=fghg,p0=[L,0],minangle=α)
-    # Wave.plots(*[a.wave() for a in [A,B,C,AA,BB,CC]],aspect=1,seed=2)
+    B = Arch(r,pi/2,pi,width=fhot,minangle=α)
+    C = Path([(0,0),(L,0)],width=fhot(0))
+    D = Arch(r,pi/2,0,width=fhot,p0=[L,0],minangle=α)
+    BB = Arch(r,pi/2,pi,width=fghg,minangle=α)
+    CC = Path([(0,0),(L,0)],width=fghg(0))
+    DD = Arch(r,pi/2,0,width=fghg,p0=[L,0],minangle=α)
+    # Wave.plots(*[a.wave() for a in [B,C,D,BB,CC,DD]],aspect=1,seed=2,scale=(3,1))
     def rect(x0,y0,dx,dy):
         # return [(x0,y0),(x0+0.5*dx,y0),(x0+dx,y0),(x0+dx,y0+dy),(x0+0.5*dx,y0+dy),(x0,y0+dy),(x0,y0)]
         return [(x0,y0),(x0+dx,y0),(x0+dx,y0+dy),(x0,y0+dy),(x0,y0)]
-    box = upsamplecurve(rect(-dx/2+L/2,-r+1,dx,dy-2),doublings=5) # print(box) # Vs(box).plot()
-    box = subtractcurves(box,AA.curve())[0]
-    box = subtractcurves(box,BB.curve())[0]
-    curves = subtractcurves(box,CC.curve())
-    curves = [a.curve() for a in [A,B,C]] + curves
-    # vss = [Vs(c) for c in curves]
-    # Vs.plots(*vss)
+    box = upsamplecurve(rect(-dx/2+L/2,-r+diceinset,dx,dy-2*diceinset),doublings=7) # print(box) # Vs(box).plot()
+    curves = subtractcurves(box,BB.curve())[0]
+    curves = subtractcurves(curves,CC.curve())[0]
+    curves = subtractcurves(curves,DD.curve())
+    curves = [c for a in [B,C,D] for c in intersectioncurves(a.curve(),box)] + curves
     return [[(x,-y) for x,y in c] for c in curves] if mirrory else curves
+def cpwelectrode2(L=1000,y0=1500,y1=150,y2=250,chipx=8000,chipy=2000,gvhwave=None,α=0.01,diceinset=25,mirrory=False):
+    # y1,y2 = straight,tapered length of fanout
+    # r = radius of quarter turn
+    # y0 = y1+y2+r = vertical distance from fanout edge to waveguide center
+    r = y0-y1-y2
+    gvhwave = gvhwave if gvhwave is not None else Wave([20,150],[10,30])
+    def ease(u):
+        return sinease(u)
+        # return flatinoutease(u,linease,0.2,0.2)
+        # return flatinoutease(u,linease,0.8,0.1)
+    def fhot(u):
+        h0,h1 = gvhwave.x[0],gvhwave.x[-1]
+        return h0+ease(u)*(h1-h0)
+    def fghg(u):
+        return fhot(u) + 2*gvhwave(fhot(u))
+    pas = [(-r,-y2-r),(-r,-y0)]
+    pbs = upsamplecurve([(-r,-r+1e-9),(-r,-y2-r)],doublings=8)
+    pfs = upsamplecurve([(L+r,-r),(L+r,-y2-r)],doublings=8)
+    pgs = [(L+r,-y2-r),(L+r,-y0)]
+    A = Path(pas,width=fhot(1))
+    B = Path(pbs,width=fhot)
+    C = Arch(r,pi/2,pi,width=fhot(0),minangle=α)
+    D = Path([(0,0),(L,0)],width=fhot(0))
+    E = Arch(r,pi/2,0,width=fhot(0),p0=[L,0],minangle=α)
+    F = Path(pfs,width=fhot)
+    G = Path(pgs,width=fhot(1))
+    AA = Path(pas,width=fghg(1))
+    BB = Path(pbs,width=fghg)
+    CC = Arch(r,pi/2,pi,width=fghg(0),minangle=α)
+    DD = Path([(0,0),(L,0)],width=fghg(0))
+    EE = Arch(r,pi/2,0,width=fghg(0),p0=[L,0],minangle=α)
+    FF = Path(pfs,width=fghg)
+    GG = Path(pgs,width=fghg(1))
+    # Wave.plots(*[a.wave() for a in [A,B,C,D,E,F,G,AA,BB,CC,DD,EE,FF,GG]],aspect=1,seed=2,scale=(3,1))
+    def rect(x,y,w,h):
+        # return [(x,y),(x+0.5*w,y),(x+w,y),(x+w,y+h),(x+0.5*w,y+h),(x,y+h),(x,y)]
+        return [(x,y),(x+w,y),(x+w,y+h),(x,y+h),(x,y)]
+    box = upsamplecurve(rect(-chipx/2+L/2,-y0+diceinset,chipx,chipy-2*diceinset),doublings=7) # print(box) # Vs(box).plot()
+    curves = subtractcurves(box,AA.curve())[0]
+    curves = subtractcurves(curves,BB.curve())[0]
+    curves = subtractcurves(curves,CC.curve())[0]
+    curves = subtractcurves(curves,DD.curve())[0]
+    curves = subtractcurves(curves,EE.curve())[0]
+    curves = subtractcurves(curves,FF.curve())[0]
+    curves = subtractcurves(curves,GG.curve())
+    curves = [c for a in [A,B,C,D,E,F,G] for c in intersectioncurves(a.curve(),box)] + curves
+    # Vs.plots(*[Vs(c) for c in curves],scale=(3,1))
+    h0,g0 = fhot(0),0.5*fghg(0)-0.5*fhot(0)
+    h1,g1 = fhot(1),0.5*fghg(1)-0.5*fhot(1)
+    dg0,dg1 = 0.5*(h0+g0),0.5*(h1+g1)
+    notes = []
+    for x in (-r,L+r):
+        notes += [dict(x=x,    y=-y0+50,inwidth=f"{h1:.0f}")]
+        notes += [dict(x=x+dg1,y=-y0+50,ingap=f"{g1:.0f}")]
+        notes += [dict(x=x-dg1,y=-y0+50,ingap2=f"{g1:.0f}")]
+        notes += [dict(x=x,    y=-r+50,inwidth=f"{h0:.0f}")]
+        notes += [dict(x=x+dg0,y=-r+50,ingap=f"{g0:.0f}")]
+        notes += [dict(x=x-dg0,y=-r+50,ingap2=f"{g0:.0f}")]
+        notes += [dict(x=x,    y=-y0+0.5*y1,separation=y1)]
+        notes += [dict(x=x,    y=-y0+y1+0.5*y2,separation=y2)]
+    for x in (100,):
+        notes += [dict(x=x,y=   0,ewidth=f"{h0:.0f}")]
+        notes += [dict(x=x,y=+dg0,egap=f"{g0:.0f}")]
+        notes += [dict(x=x,y=-dg0,egap=f"{g0:.0f}")]
+    for x in (L-100,):
+        notes += [dict(x=x,y=   0,ewidth2=f"{h0:.0f}")]
+        notes += [dict(x=x,y=+dg0,egap2=f"{g0:.0f}")]
+        notes += [dict(x=x,y=-dg0,egap2=f"{g0:.0f}")]
+    def mirrornote(note):
+        y = note.pop('y')
+        return dict(y=-y,**note)
+    return [[(x,-y) for x,y in c] for c in curves] if mirrory else curves, [mirrornote(n) for n in notes] if mirrory else notes
+
 def flattoparch(p0,L,r,spacings,minangle=0.1,upsidedown=1): # spacings = list of [width,gap,width,gap,..,width] from bottom to top, r and p0 are relative to middle element of spacings
     n,n0,p0,spacings = len(spacings),len(spacings)//2,V(p0),np.array(spacings)
     assert 1==n%2, "spacings can't be even"
@@ -837,52 +1156,52 @@ if __name__ == '__main__':
         xys = np.array([[0,0],[1,1],[2,1],[2,2]])
         ws = [.2,.3,.4,.2]
         p,pp = Path(xys,0.2),Path(xys,2*np.array(ws),cw=1)
-        Wave.plots(p.wave(),pp.wave(),x='x',y='y',aspect=True,pause=pause)
+        Wave.plots(p.wave(),pp.wave(),x='x',y='y',aspect=True)
         q = Arch(5,pi/2,pi,1) # print(q) # w,ww = Wave(q.xys[:,1],q.xys[:,0]),Wave(q.xys[:2,1],q.xys[:2,0])
-        q.plot(m=1,pause=pause)
+        q.plot(m=1)
         class Path2(Path):
             def __init__(self): super().__init__(xys=[[0,0],[1,1],[1,0]],width=0.1)
-        Path2().plot(m=1,pause=pause)
+        Path2().plot(m=1)
     def factettest():
         xys = np.array([[0,0],[1,1],[2,1],[2,2]])
         ws = [.2,.3,.4,.2]
         p = Path(xys,ws,normal=(10,10))
-        Wave.plots(p.wave(),m=1,x='x',y='y',aspect=True,pause=pause)
+        Wave.plots(p.wave(),m=1,x='x',y='y',aspect=True)
     def ribbontest():
         wws = [p.wave() for p in ribbons(-1000,[300,125,30,125,300])]
         ws = [p.wave() for p in ribbons(1000,[1000,60,90,60,1000],[1000,250,270,250,1000])]
-        Wave.plots(*ws,*wws,m=0,seed=2,markersize=2,aspect=1,pause=pause)
+        Wave.plots(*ws,*wws,m=0,seed=2,ms=2,aspect=1)
         wws = [p.wave() for p in ribbons(-1000,[300,125,30,125,300],horizontal=0)]
         ws = [p.wave() for p in ribbons(1000,[1000,60,90,60,1000],[1000,250,270,250,1000],horizontal=0)]
-        Wave.plots(*ws,*wws,m=0,seed=2,markersize=2,aspect=1,pause=pause)
+        Wave.plots(*ws,*wws,m=0,seed=2,ms=2,aspect=1)
     def arctest():
         ws = [p.wave() for p in [Arch(5,0,pi*3/2,1,V(-10,-10)),Arch(5,pi/2,pi,1,V(0,-10)),Arch(5,0,pi/2,1,V(10,-10))]] # ccw arcs, φ0<φ1
         wws = [p.wave() for p in [Arch(5,0,-pi*3/2,2,V(-10,10)),Arch(5,-pi/2,-pi,2,V(0,10)),Arch(5,0,-pi/2,2,V(10,10))]] # cw arcs, φ1<φ0
         p = Arch(5,0,2*pi,1,[20,0]) # full circle
         assert np.allclose(p.xys[0],p.xys[-1]),str(list(p.xys[0]))+str(list(p.xys[-1]))
         ww = [p.wave() for p in flattoparch([-15,30],30,20,[3,1,1,1,2])]
-        Wave.plots(*ws,*wws,p.wave(),*ww,m=1,seed=3,markersize=2,aspect=1,pause=pause)
+        Wave.plots(*ws,*wws,p.wave(),*ww,m=1,seed=3,ms=2,aspect=1)
     def ribbonarctest():
         ps = ribbonarcs(10,[1,2,3,2,1]) + ribbonarcs(10,[1,2,3,2,1],φ0=pi/2,φ1=2*pi)
         ws = [p.wave() for p in ps]
-        Wave.plots(*ws,m=1,seed=2,markersize=2,aspect=1,pause=pause)
+        Wave.plots(*ws,m=1,seed=2,ms=2,aspect=1)
     def pathfunctiontest(r=5,w=9):
         θ = np.linspace(0,pi,11).reshape(-1,1)
         xys = np.hstack((r*cos(θ),r*sin(θ)))
         xys = np.vstack(( xys[:1]+V(0,-r),xys,xys[-1:]+V(0,-r) ))
         p = Path(xys,width=w)
         pp = Path(xys,width=(lambda u:1+(2*w-2)*abs(u-0.5)))
-        Wave.plots(p.wave(),pp.wave(),m=1,x='x',y='y',aspect=True,pause=pause)
+        Wave.plots(p.wave(),pp.wave(),m=1,x='x',y='y',aspect=True)
     def taperedribbontest():
         ws = taperedribbons([[0,i] for i in np.linspace(0,8,17)],[lambda u:u**2+3, lambda u:u**2+2, lambda u:u**2+1, lambda u:u**2+2, lambda u:u**2+4])
         wws = taperedribbons([[0,i] for i in np.linspace(0,8,3)],[lambda u:u**2+3, lambda u:u**2+2, lambda u:u**2+1, lambda u:u**2+2, lambda u:u**2+4])
         wwws = taperedribbons([[0,-i] for i in np.linspace(0,8,17)],[lambda u:u**2+3, lambda u:u**2+2, lambda u:u**2+1, lambda u:u**2+2, lambda u:u**2+4],gaptest=1)
-        Wave.plots(*[w.wave() for w in ws+wws+wwws],m=1,seed=2,markersize=2,aspect=1,pause=pause)
+        Wave.plots(*[w.wave() for w in ws+wws+wwws],m=1,seed=2,ms=2,aspect=1)
     def mzribbonstest():
-        # Wave.plots(*[w.wave() for w in mzribbons(ftaper=lambda v:v)],m=0,seed=2,markersize=2,aspect=1,pause=pause)
-        Wave.plots(*[w.wave() for w in mzribbons(ftaper=None)],m=0,seed=2,markersize=2,aspect=1,pause=pause)
-        Wave.plots(*[w.wave() for w in mzrftest(L=5000,r=500,taperx=1000,win=[300,125,30,125,300],we=[100,47,8,47,100],wout=[300/2,125,30,125,300/2],yin=1000)],m=0,seed=2,markersize=2,aspect=1,pause=pause)
-        Wave.plots(*[w.wave() for w in mzsribbons(L=5000,r=200,win=[300,125,30,125,300],we=[100,47,8,47,100],wout=[300/2,125,30,125,300/2],yin=1000,yout=2000)],m=1,seed=2,markersize=2,aspect=1,pause=pause)
+        # Wave.plots(*[w.wave() for w in mzribbons(ftaper=lambda v:v)],m=0,seed=2,ms=2,aspect=1)
+        Wave.plots(*[w.wave() for w in mzribbons(ftaper=None)],m=0,seed=2,ms=2,aspect=1)
+        Wave.plots(*[w.wave() for w in mzrftest(L=5000,r=500,taperx=1000,win=[300,125,30,125,300],we=[100,47,8,47,100],wout=[300/2,125,30,125,300/2],yin=1000)],m=0,seed=2,ms=2,aspect=1)
+        Wave.plots(*[w.wave() for w in mzsribbons(L=5000,r=200,win=[300,125,30,125,300],we=[100,47,8,47,100],wout=[300/2,125,30,125,300/2],yin=1000,yout=2000)],m=1,seed=2,ms=2,aspect=1)
     def mztapertest():
         L,p0,ty,r,upsidedown,ftaper = 5000,(0,0),1000,200,False,lambda v:v**2
         # chip is 100-47-8-47-100 to 300-125-30-125-300
@@ -898,8 +1217,62 @@ if __name__ == '__main__':
         pps = np.array([[0,y] for y in np.linspace(0,2*ty if upsidedown else -2*ty,101)])+p0
         cs += taperedribbons(pps + ((-r,r+ty) if upsidedown else (-r,-r-ty)),ffs)
         cs += taperedribbons(pps + ((L+r,+r+ty) if upsidedown else (L+r,-r-ty)),ffs)
-        Wave.plots(*[w.wave() for w in cs],x='x (µm)',y='y (µm)',xlim=(-2000,3000),m=0,seed=0,markersize=2,aspect=1,pause=pause)
-    # pause = 1
+        Wave.plots(*[w.wave() for w in cs],x='x (µm)',y='y (µm)',xlim=(-2000,3000),m=0,seed=0,ms=2,aspect=1)
+    def easetest():
+        xs = np.linspace(0,1,1001)
+        fs = [linease, sinease,
+                lambda x:flatinease(x,linease,0.5),
+                lambda x:flatoutease(x,sinease,0.5),
+                lambda x:flatinoutease(x,linease,0.6,0.2),
+                lambda x:cornerease(x,n=2), lambda x:powerease(x,n=2),
+                lambda x:cornerease(x,n=3), lambda x:powerease(x,n=3), ]
+        ss = 'lin,sin,flatin lin,flatout sin,flatinout lin,corner 2,power 2,corner 3,power 3'.split(',')
+        # print([f(np.array([0,0.5,1])) for f in fs])
+        ws = [Wave(f(xs),xs,s) for f,s in zip(fs,ss)]
+        Wave.plots(*ws,seed=12,lw=0.5)
+    def cpwtest(ghg='36-20-36',chipy=2000,yy=500,L=1000,diceinset=25,xghg=245):
+        # chipy 2000 yy 500 r 1500
+        gapsvshots = {
+            # 50Ω designs from mglnapemask(gridsize=4000,gridnum=360000,iters=3,xghg=900)
+            '23-10-23': Wave([23,35.9684,50.3551,65.6613,81.6565,114.677,148.62,183.064,217.792,252.655,287.57,322.458,357.273,390.177],[10,15,20,25,30,40,50,60,70,80,90,100,110,119.481]),
+            '51-20-51': Wave([51,66.516,82.7314,116.2,150.595,185.499,220.679,255.999,291.365,326.699,361.96,390.659],[20,25,30,40,50,60,70,80,90,100,110,118.169]),
+            '16-10-16': Wave([16,24.7612,35.1649,46.8643,59.5648,87.1243,116.633,147.452,179.044,211.188,243.706,276.472,309.376,342.345,375.326,383.494],[10,15,20,25,30,40,50,60,70,80,90,100,110,120,130,132.48]),
+            '36-20-36': Wave([36,48.0163,61.0539,89.3424,119.615,151.223,183.614,216.565,249.89,283.459,317.161,350.925,384.688,384.95],[20,25,30,40,50,60,70,80,90,100,110,120,130,130.078]),
+            }
+        gvh = gapsvshots[ghg]
+        cc,notes = cpwelectrode2(L=L,y0=chipy-yy,chipx=L+2*(chipy-yy)+4000,chipy=chipy,gvhwave=gvh,mirrory=False,diceinset=diceinset)
+        Vs.plots(*[Vs(c) for c in cc],scale=(3,1))
+    def compresscurvetest():
+        reducecurve([(0,0),(1,0),(1,1),(0.5,1.0),(0,1),(0,0)],0.1)
+        reducecurve([(0,0),(1,0),(1,1),(0.5,1.1),(0,1),(0,0)],0.1)
+        reducecurve([(0,0),(1,0),(1,1),(0.5,0.9),(0,1),(0,0)],0.1)
+        reducecurve([(0,0),(1,0),(1,1),(0.5,1.01),(0,1),(0,0)],0.1)
+        # print( reducecurve([(0,0),(1,0),(1,1),(0.5,1.0),(0,1),(0,0)],0.1) )
+        # print( reducecurve([(0,0),(1,0),(1,1),(0.5,1.1),(0,1),(0,0)],0.1) )
+        # print( reducecurve([(0,0),(1,0),(1,1),(0.5,0.9),(0,1),(0,0)],0.1) )
+        # print( reducecurve([(0,0),(1,0),(1,1),(0.5,1.01),(0,1),(0,0)],0.1) )
+        # print( reducecurve([(0,0),(1,1),(0,0)],2.0) )
+        # print( reducecurve([(0,0),(1,0),(1,1),(0,1),(0,0)],2.0) )
+        # print( reducecurve([(0,0),(0,0)],2.0) )
+    def lineslicecurvestest():
+        polys = [
+            [(0, 0), (0, 2), (4, 2), (4, 0)],
+            [(1, 3), (1, 5), (5, 5), (5, 3)],
+            [(2, 6), (2, 8), (8, 8), (8, 6)]
+        ]
+        centers,widths = lineslicecurves(3.,polys)
+        print('centers',centers)
+        print('widths',widths)
+    def centerofmasstest():
+        poly = [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]
+        print('centroid, area',centerofmass(poly,area=True))
+        poly = [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0), (0, 0), (-4, 0), (-4, -4), (0, -4), (0, 0)]
+        print('centroid, area',centerofmass(poly,area=True))
+        ## error: area = 0
+        # poly = [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0), (0, 0), (0, -4), (-4, -4), (-4, 0), (0, 0)]
+        # print('centroid, area',centerofmass(poly,area=True))
+
+
     # pathtest()
     # factettest()
     # arctest()
@@ -913,3 +1286,8 @@ if __name__ == '__main__':
     # validpolytest()
     # savedxf()
     # testsbend()
+    # easetest()
+    # cpwtest()
+    # compresscurvetest()
+    # lineslicecurvestest()
+    centerofmasstest()
