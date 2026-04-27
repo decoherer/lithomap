@@ -1,5 +1,5 @@
 import numpy as np
-from numpy import pi,sqrt,sin,cos,ceil
+from numpy import pi,sqrt,sin,cos,ceil,abs
 import sys
 # sys.path.insert(1, '/py/work/sell')
 from wavedata import Wave
@@ -15,21 +15,15 @@ def bars2file(file,bars):
     with open(file if file.endswith('.dat') else file+'.dat','w') as f:
         for b in bars:
             f.write(f'{b:.3f}\n')
-def grating2xy(starts,ends,delta=0): # convert to plottable format, also used for piecewise linear ft
-    # assume starts[n]<ends[n] and ends[n]<starts[n+1] # starts,ends,delta = [20,40,60],[25,45,65],1 # x = [q+r for p in zip(starts,ends) for q in p for r in [0,0]]         # [20,20,25,25,40,40,45,45,60,60,65,65]
-    x = [q+r for p in zip(starts,ends) for q in p for r in [-delta,delta]]  # [19,21,24,26,39,41,44,46,59,61,64,66]
+def grating2xy(starts,ends,delta=0): # convert to plotable format, also used for piecewise linear ft
+    # assume starts[n]<ends[n] and ends[n]<starts[n+1]                      # starts,ends = [20,40,60],[25,45,65]
+    x = [q+r for p in zip(starts,ends) for q in p for r in [-delta,delta]]  # [20,20,25,25,40,40,45,45,60,60,65,65] or if Δ=1 [19,21,24,26,39,41,44,46,59,61,64,66]
     y = [q for p in zip(starts,ends) for q in [0,1,1,0]]                    # [ 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0]
     return x,y
-# def fixedresgrating2bars(xx,yy): # xx,yy = x position, y grating sign (±1) as np arrays
-#     barstarts,barends = [],[]
-#     if 1==yy[0]: barstarts += [xx[0]]
-#     for p in range(1,len(xx)):  #print yy[p-1],yy[p],(yy[p-1]<1 and yy[p]==1),(-1<yy[p-1] and yy[p]==-1),xx[p]
-#         if yy[p-1]<1 and yy[p]==1:
-#             barstarts += [xx[p]]
-#         if -1<yy[p-1] and yy[p]==-1 and not 1==p:
-#             barends += [xx[p]]
-#     if 1==yy[-1]: barends += [xx[-1]]
-#     return barstarts,barends
+def gratingfromxys(xys):
+    barstarts = [0.5*(x0+x1) for (x0,y0),(x1,y1) in zip(xys[:-1],xys[1:]) if y0<y1]
+    barends   = [0.5*(x0+x1) for (x0,y0),(x1,y1) in zip(xys[:-1],xys[1:]) if y0>y1]
+    return barstarts,barends
 def fixedresgrating2bars(xx,yy): # xx,yy = x position, y grating sign (±1) as np arrays
     y0,y1 = min(yy),max(yy)
     barstarts,barends = [],[]
@@ -63,14 +57,14 @@ def ftgrating(starts,ends,p0=None,dp=None,normalize=True,amplitude=True,res=2001
     p0 = (np.array(starts[1:])/2-np.array(starts[:-1])/2+np.array(ends[1:])/2-np.array(ends[:-1])/2).mean() if p0 is None else p0
     dp = p0/10 if dp is None else dp
     x,y = grating2xy(starts,ends)
-    w = Wave(y,x)
+    # w = Wave(y,x)
+    w = 2*Wave(y,x)-1
     wp = np.linspace(p0-dp/2,p0+dp/2,res)
     wf = Wave(abs(w.ft(1/wp)),wp)
-    wf = wf if amplitude else wf**2
+    # wf = wf if amplitude else wf**2
+    wf = wf if amplitude else abs(wf)**2
     return wf/wf[wf.pmax()] if normalize else wf
-def grating(period,dc,padx,padcount=1,gapx=0,phasex=0,x0=0,apodize=None,omitpads=()): # don't use phasex for electrode, not tested yet
-    # assert 0==phasex, 'phasex implementation not yet tested'
-    #if dev: period = periodmag*period
+def grating(period,dc,padx,padcount=1,gapx=0,phasex=0,x0=0,apodize=None,omitpads=()):
     barcount = int(np.ceil(1.*padcount*padx/period))
     barstarts = [x0+phasex+i*period for i in range(barcount)] # startx of each bar
     assert 0<dc and dc<=1
@@ -80,23 +74,39 @@ def grating(period,dc,padx,padcount=1,gapx=0,phasex=0,x0=0,apodize=None,omitpads
     def padnum(x): return x//padx
     barstarts = [x for x in barstarts if padnum(x) not in omitpads]
     barends = [x+period*dc for x in barstarts] # endx of each bar
-    if apodize in [0,1]: # backwards compatibility with Dec20A and earlier
-        def tri(x): return 1-2*abs(x-0.5)
-        def trap(x): return np.minimum(1,2*tri(x))
-        barstarts,barends = dropsmallbars(*apodizebars(barstarts,barends,afunc=trap),tolerance=0)
-        return barstarts,barends
     apodize = {0:None,1:'trapezoidal'}[apodize] if apodize in [0,1] else apodize # keep backwards compatible with Dec20A mask
     if apodize is not None:
         assert 0.5==dc, 'apodization assumes 50% duty cycle'
         assert apodize in 'triangle,trapezoidal,asintriangle,asingauss23'.split(','), apodize
-        # # if apodize is an apodizing function, use it as is, else use a trapezoidal apodization function
-        # if apodize in [1,True]:
-        #     def tri(x): return 1-2*abs(x-0.5)
-        #     def trap(x): return np.minimum(1,2*tri(x))
-        #     apodize = trap
         barstarts,barends = dropsmallbars(*apodizebars(barstarts,barends,apodize=apodize),tolerance=0)
     return barstarts,barends
-def mergetouchingbars(barstarts,barends,tolerance=1.0): # <1.0um won't resolve lithographically and be a resistive gap
+def apodizebars(starts,ends,afunc=None,apodize=None,σ=0.23): # typical: afunc(0)=2, afunc(0.5)=1, afunc(1)=2 (where 0,1,2 = 0%,50%,100% duty cycle)
+    # functions that return 0 to 1 to 0 for x from 0 to 1
+    def tri(x): return 1-2*abs(x-0.5) # 0 to 1 to 0
+    def trap(x): return np.minimum(1,2*tri(x))
+    def gauss(x,σ): return np.exp( -0.5 * (x-0.5)**2 / σ**2 )
+    # functions that return duty cycle 1 to 0.5 to 1
+    def triangledutycycle(x): return 1-0.5*tri(x)
+    def trapezoidaldutycycle(x): return 1-0.5*trap(x)
+    def asintriangle(x):
+        dc = np.arcsin(tri(x))/np.pi # duty cycle from 0 to 0.5 to 0
+        return 1-dc                  # duty cycle from 1 to 0.5 to 1
+    def asingauss(x,σ): return 1-np.arcsin(gauss(x,σ))/np.pi
+    if afunc is None and apodize is not None:
+        afunc = {
+            'triangle':     lambda x: 2 * triangledutycycle(x),
+            'trapezoidal':  lambda x: 2 * trapezoidaldutycycle(x),
+            'asintriangle': lambda x: 2 * asintriangle(x),
+            'asingauss23':  lambda x: 2 * asingauss(x,0.23),
+            'asingauss':  lambda x: 2 * asingauss(x,σ),
+        }[apodize]
+    a,b = np.array(starts),np.array(ends)
+    c = a/2+b/2                 # c = centers
+    w0 = b-a                    # old bar widths
+    fp = (c-c[0])/(c[-1]-c[0])  # fp = fractionalposition
+    w1 = w0*afunc(fp)           # new bar widths
+    return c-w1/2,c+w1/2        # new starts,ends
+def mergetouchingbars(barstarts,barends,tolerance=1.0): # <1.0um won't resolve lithographically and maintain a resistive gap
     a,b = [barstarts[0]],[]
     for i in range(len(barstarts)-1):
         if barstarts[i+1]-barends[i]>tolerance: # if barstarts[i+1]!=barends[i]:
@@ -119,53 +129,47 @@ def expandbars(barstarts,barends,op): # positive op → make bars bigger, negati
         return [a-op/2 for a in barstarts],[b+op/2 for b in barends]  # can be negative bar length, so call dropsmallbars()
 def invertbarsgaps(starts,ends):
     return ends[:-1],starts[1:]
-def breakupgaps(barstarts,barends,maxgap,barsize):
-    if not maxgap:
+def breakupbars(barstarts,barends,maxbar,gapsize):
+    if not maxbar:
         return barstarts,barends
-    assert barsize<maxgap
-    gapstarts,gapends = barends[:-1],barstarts[1:]
-    xx0,xx1 = [],[] # xx0,xx1 will be the new gapstarts,gapends
-    for x0,x1 in zip(gapstarts,gapends):
-        if maxgap < x1-x0:
-            n = 1 + int((x1-x0+barsize)/(maxgap+barsize))
-            gap = (x1-x0+barsize)/n - barsize
-            xx0 += [x0+i*(gap+barsize) for i in range(n)]
-            xx1 += [x0+i*(gap+barsize)+gap for i in range(n)]
-            assert np.allclose(x1,x0+(n-1)*(gap+barsize)+gap)
+    assert gapsize<=maxbar
+    xx0,xx1 = [],[] # xx0,xx1 will be the new barstarts,barends
+    for x0,x1 in zip(barstarts,barends):
+        if maxbar < x1-x0:
+            n = 1 + int((x1-x0+gapsize)/(maxbar+gapsize))
+            gap = (x1-x0+gapsize)/n - gapsize
+            xx0 += [x0+i*(gap+gapsize) for i in range(n)]
+            xx1 += [x0+i*(gap+gapsize)+gap for i in range(n)]
+            assert np.allclose(x1,x0+(n-1)*(gap+gapsize)+gap)
         else:
             xx0,xx1 = xx0+[x0],xx1+[x1]
+    return xx0,xx1
+def breakupgaps(barstarts,barends,maxgap,barsize):
+    gapstarts,gapends = barends[:-1],barstarts[1:]
+    xx0,xx1 = breakupbars(gapstarts,gapends,maxbar=maxgap,gapsize=barsize)
     return barstarts[:1]+xx1,xx0+barends[-1:]
-def apodizebars(starts,ends,afunc=None,apodize=None): # typical: afunc(0)=2, afunc(0.5)=1, afunc(1)=2 (where 0,1,2 = 0%,50%,100% duty cycle)
-    # functions that return 0 to 1 to 0 for x from 0 to 1
-    def tri(x): return 1-2*abs(x-0.5) # 0 to 1 to 0
-    def trap(x): return np.minimum(1,2*tri(x))
-    def gauss(x,σ): return np.exp( -0.5 * (x-0.5)**2 / σ**2 )
-    # functions that return duty cycle 1 to 0.5 to 1
-    def triangledutycycle(x): return 1-0.5*tri(x)
-    def trapezoidaldutycycle(x): return 1-0.5*trap(x)
-    def asintriangle(x):
-        dc = np.arcsin(tri(x))/np.pi # duty cycle from 0 to 0.5 to 0
-        return 1-dc                  # duty cycle from 1 to 0.5 to 1
-    def asingauss(x,σ): return 1-np.arcsin(gauss(x,σ))/np.pi
-    if afunc is None and apodize is not None:
-        afunc = {
-            'triangle':     lambda x: 2 * triangledutycycle(x),
-            'trapezoidal':  lambda x: 2 * trapezoidaldutycycle(x),
-            'asintriangle': lambda x: 2 * asintriangle(x),
-            'asingauss23':  lambda x: 2 * asingauss(x,0.23),
-        }[apodize]
-    a,b = np.array(starts),np.array(ends)
-    c = a/2+b/2                 # c = centers
-    w0 = b-a                    # old bar widths
-    fp = (c-c[0])/(c[-1]-c[0])  # fp = fractionalposition
-    w1 = w0*afunc(fp)           # new bar widths
-    return c-w1/2,c+w1/2        # new starts,ends
+# def breakupgaps(barstarts,barends,maxgap,barsize):
+#     if not maxgap:
+#         return barstarts,barends
+#     assert barsize<maxgap
+#     gapstarts,gapends = barends[:-1],barstarts[1:]
+#     xx0,xx1 = [],[] # xx0,xx1 will be the new gapstarts,gapends
+#     for x0,x1 in zip(gapstarts,gapends):
+#         if maxgap < x1-x0:
+#             n = 1 + int((x1-x0+barsize)/(maxgap+barsize))
+#             gap = (x1-x0+barsize)/n - barsize
+#             xx0 += [x0+i*(gap+barsize) for i in range(n)]
+#             xx1 += [x0+i*(gap+barsize)+gap for i in range(n)]
+#             assert np.allclose(x1,x0+(n-1)*(gap+barsize)+gap)
+#         else:
+#             xx0,xx1 = xx0+[x0],xx1+[x1]
+#     return barstarts[:1]+xx1,xx0+barends[-1:]
 def kchirpgrating(p0,p1,dc,padx,padcount=1,gapx=0,phase=0,x0=0): # https://www.gaussianwaves.com/2014/07/chirp-signal-frequency-sweeping-fft-and-power-spectral-density/
     assert 0==phase, 'phase not implemented'
     k0,k1 = 2*pi/p0,2*pi/p1
     barcount = int(padcount*padx*(k1+k0)/4/pi)
     L = 4*pi*barcount/(k1+k0)
-    def k(x): return 0.5*(k1-k0)*x/L + k0
+    def k(x): return 0.5*(k1-k0)*x/L + k0 # note that ϕ(x) = ∫xk(x)dx so the instantaneous k at x=L is ϕ'(L) = k₁ not ½k₁ as naively expected
     def m(x): return x*k(x)/2/pi
     def xx(m): return ( sqrt(m*4*pi*(k1-k0)/L + k0*k0) - k0 )*L/(k1-k0)
     ms = np.arange(barcount+1)  # period number
@@ -180,14 +184,68 @@ def kchirpgrating(p0,p1,dc,padx,padcount=1,gapx=0,phase=0,x0=0): # https://www.g
 def entwinedgrating(period1,period2,padcount,gx):
     return interleavedgrating(period1,period2,padcount,gx)
 def apodizedinterleavedgrating(period1,period2,padcount,gx,apodize='triangle',res=0.1):
-    xx = np.arange(0,1.*padcount*gx,res)
-    def polingamplitude(a,b): # return the preferred poling amplitude of the two choices
-        return np.where(np.abs(a)>np.abs(b),a,b)
-    a1 = np.sin(2*np.pi*xx/period1)
-    a2 = np.sin(2*np.pi*xx/period2)
-    assert 'triangle'==apodize
-    yy = (polingamplitude(a1,a2) < np.abs(1-2*xx/(padcount*gx)))
+    def splitnumbers(s: str):
+        # e.g. 'abc2.5xxx5e8$' → ['abc', 2.5, 'xxx', 5., 'e', 8., '$']
+        import re
+        pattern = r'\d+(?:\.\d+)?'                      # integer or decimal
+        tokens = re.split(f'({pattern})', s)            # keep the numbers in the list
+        return [float(t) if re.fullmatch(pattern, t) else t for t in tokens if t]
+    L,Δ = padcount*gx,1
+    if apodize[-1] in '0123456789':
+        apodize,z = splitnumbers(apodize) # z = length in mm over which it happens, full length by default
+        Δ = 1000*z/L
+        assert 0<Δ<1, Δ
+    assert apodize in ['tri','gauss23','lin','revlin']
+    def amptri(x,Δ=0.2): return np.clip( 1-abs(2*(x-0.5)/Δ), 0, 1) # 0 to 1 to 0, Δ = non-zero fraction
+    def ampgauss23(x,Δ=0.2,σ=0.23): return np.exp( -0.5 * (x-0.5)**2 / Δ**2  / σ**2 ) # 0 to 1 to 0
+    def amplin(x,Δ=0.2): return 0.5 + np.clip((x-0.5)/Δ, -0.5, 0.5) # 0 at start, 1 at end, Δ = linear fraction
+    def amprevlin(x,Δ=0.2): return 0.5 + np.clip((0.5-x)/Δ, -0.5, 0.5)
+    def f1(x):
+        f = {'tri':amptri,'gauss23':ampgauss23,'lin':amprevlin,'revlin':amplin}[apodize]
+        return f(x,Δ)
+    def f2(x):
+        f = {'tri':amptri,'gauss23':ampgauss23,'lin':amplin,'revlin':amprevlin}[apodize]
+        return f(x,Δ)
+    xx = np.arange(0,L,res)
+    a1 = -np.sin(2*np.pi*xx/period1)
+    a2 = -np.sin(2*np.pi*xx/period2)
+    t1 = .6* 2/pi * Wave(np.cumsum(2/pi * f1(xx/L)),xx,'target')
+    t2 = .6* 2/pi * Wave(np.cumsum(2/pi * f2(xx/L)),xx)
+    i,yy,area1,area2 = 0,0*xx,0*xx,0*xx
+    while i<len(xx)-1:
+        i += 1
+        # toolow = (area1[i-1] + abs(a1[i]) < t1[i] - 1)
+        # yy[i] = (+1 if (toolow and 0<a1[i]) else -1)
+        # area1[i] = area1[i-1] + a1[i]*yy[i]
+        pole1 = ((area1[i-1] + abs(a1[i]) < t1[i] - 1) and 0<a1[i])
+        pole2 = ((area2[i-1] + abs(a2[i]) < t2[i] - 1) and 0<a2[i])
+        pole = (pole1 or pole2)
+        pole = pole1 if abs(a1[i])>abs(a2[i]) else pole2
+        # pole = pole1 if f1(xx[i]/L) * abs(np.arcsin(a1[i])) > f2(xx[i]/L) * abs(np.arcsin(a2[i])) else pole2
+        polingsign = +1 if pole else -1
+        yy[i] = 0.5*(polingsign+1)
+        area1[i] = area1[i-1] + a1[i]*polingsign
+        area2[i] = area2[i-1] + a2[i]*polingsign
     barstarts,barends = fixedresgrating2bars(xx,yy)
+    # u = Wave(yy,xx,'yy')
+    # dc = u.smooth(1000,savgol=0).rename('mean dutycycle')
+    # w1 = Wave(np.cumsum(a1*(2*yy-1))*res/L*pi/2,xx,'∫A$_1$').sp(l='0',lw=2)
+    # w2 = Wave(np.cumsum(a2*(2*yy-1))*res/L*pi/2,xx,'∫A$_2$').sp(l='0',lw=2)
+    # # wa = Wave(area1*res/L*pi/2,xx,'area1').sp(l='3',lw=1)
+    # wt1 = (t1*res/L*pi/2).sp(c='k',l='2')
+    # wt2 = (t2*res/L*pi/2).sp(c='k',l='2')
+    # # Wave.plot(dc,w1,w2,wt1,wt2,grid=1,seed=1)
+    # v1 = w1.smooth(10000).diff().rename('A$_1$')*L/res
+    # v2 = w2.smooth(10000).diff().rename('A$_2$')*L/res
+    # Wave.plot(dc,v1,v2,w1,w2,wt1,wt2,grid=1,seed=1,lw=1,x='x (µm)',y='relative amplitude')
+    # def amplitude(w):
+    #     from wavedata import wrange
+    #     ux = wrange(0,L,0.1)
+    #     wu = Wave([w(x,extrapolate='constant') for x in ux],ux)
+    #     return [( pi/2 * (1-2*wu) * np.sin(2*pi*ux/Λ) ).smooth(10000) for Λ in (period1,period2)]
+    # w = grating2wave(barstarts,barends)
+    # Wave.plot(*amplitude(w),seed=1,lw=1)
+    # exit()
     return barstarts,barends
 def interleavedgrating(period1,period2,padcount,gx,res=0.1):
     # res,minbarsize = 0.1,max(0.6,overpole)
@@ -290,13 +348,42 @@ def electrodegratingft(barstarts,barends):
     w0 = grating2wave(*grating(Λ,0.5,L,padcount=1,gapx=0))
     us = [waveft(u) for u in (w0,w)]
     Wave.plots(*[u/us[0](Λ) for u in us],x='Λ (µm)',y='relative nonlinear response')
-
-
+def onoffs2grating(d,pattern,offvalue=0,δ=0,L=None,wave=False):
+    pattern = [(1 if p in '1*#^x+' else offvalue) for p in pattern] if isinstance(pattern, str) else list(pattern)
+    L = L if L is not None else d*len(pattern)
+    N = int(L//(d*len(pattern)))
+    ps = [0] + N*pattern + [0]
+    xys = [(n*d+f*δ,p) for n,(p0,p1) in enumerate(zip(ps[:-1],ps[1:])) for p,f in ((p0,-1),(p1,+1)) if p0!=p1]
+    a,b = bool(0<xys[0][0]), bool(xys[-1][0]<L)
+    xys = a*[(0,offvalue)] + xys + b*[(L,offvalue)]
+    return Wave.fromxys(xys) if wave else gratingfromxys(xys)
+def deltasigmamatch(target):
+    p = np.arange(len(target)) % 2 # parity mask [0 1 0 1 0 ...]
+    return np.round((target - p) / 2) * 2 + p # snap to the nearest integer with the required parity
+def fixedbarapodized(Λ,L,σ,wave=False): # Λ in µm, L in mm
+    from scipy.special import erf
+    Λ = abs(Λ)
+    def g(n): # half gauss, n = halfbar index
+        return np.exp(-0.5*n**2/σn**2)
+    def intg(n): # integral of half gauss
+        return σn * np.sqrt(np.pi/2) * erf( n / (np.sqrt(2)*σn) )
+    N,σn = int(1e3*L/Λ-1),σ*2*1e3*L/Λ # N = number of halfbars in last half of grating, not counting the middle halfbar
+    ns = [0]+[0.5+i for i in range(N)]
+    t = g(Wave(ns,ns)).trapezoid().rename('t')
+    h = Wave([intg(n) for n in ns],ns,'h')
+    mh = Wave(deltasigmamatch(h.y[1:]-0.5)+0.5, h.x[1:])
+    mt = Wave(deltasigmamatch(h.y[1:]-0.5)+0.5, h.x[1:])
+    # Wave.plot(t,h,mt,mh,l='2323',grid=1,m='o',ms=3,lw=1.5,seed=1)
+    d = mt.diff() # ±1 for each halfbar, +1=in-phase, -1=out-of-phase
+    assert all(di in (-1,+1) for di in d.y)
+    flip = [int(f) for f in ~(d.y==+1)^(np.arange(len(d))%2)] # e.g. flip=[0 1 0 1...] if d is all +1 or [1 0 1 0...] if d is all -1
+    ff = flip[::-1] + [1] + flip # flips is for second half, ff is for full length including middle halfbar
+    ff = [ff[0]^fi for fi in ff] # invert if needed to ensure beginning and end are unpoled
+    assert ff==ff[::-1], 'flipping pattern must be symmetric'
+    return onoffs2grating(Λ/2,ff,wave=wave)
+    
 if __name__ == '__main__':
-    def frequencybandwidth(Δλ,λ): # returns df in GHz for dlambda,lambda in nm, or df in Hz for dlambda,lambda in m
-        return Δλ*299792458/λ**2 # in GHz
     def simplephasegrating():
-        from grating import grating,invertbarsgaps,ftgrating
         g0,g1 = grating(100,0.5,padx=20001,padcount=1,gapx=0,phasex=0,x0=0)
         n = len(g1)//2
         a0,a1 = g0[:n],g1[:n]
@@ -307,245 +394,4 @@ if __name__ == '__main__':
         ff = ftgrating(a0+b0,a1+b1,p0=100,dp=6,normalize=0,res=2001)**2
         norm = f.max()
         Wave.plots(f/norm,ff/norm)
-    # def Λ2λft(w):
-    #     from sellmeier import polingperiod
-    #     λs = np.linspace(1300,1700,201)
-    #     Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-    #     return Wave(w.y,[Wave(Λs,λs).xaty(Λ) for Λ in w.x])
-    def phasegratingfreq():
-        from grating import grating,phasegrating,reverse,ftgrating,spectralcomb
-        from sellmeier import polingperiod
-        # print(spectralcomb([0,2,4,6],[1,3,5,7],0.1,L=8))
-        # Λ,L = 18.5,20000
-        λ0,L = 1550,50000
-        Λ = polingperiod(λ0,sell='mglnridgewg',Type='zzz')
-        print('Λ',Λ)
-        gg0 = reverse(L,*grating(Λ,0.5,padx=L))
-        gs = [phasegrating(*gg0,n) for n in [1,2,6]]
-        gs += [spectralcomb(*phasegrating(*gg0,2),2/3)]
-        fs = [ftgrating(*g,p0=Λ,dp=0.08,normalize=0,res=1001)**2 for g in gs]
-        fs = [f/fs[0].max() for f in fs]
-        # Wave.plots(*fs,seed=3)
-        def Λ2λ(w):
-            from sellmeier import polingperiod
-            λs = np.linspace(1300,1700,201)
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,λs).xaty(Λ) for Λ in w.x])
-        def Λ2f(w):
-            from sellmeier import polingperiod
-            λs = np.linspace(λ0-200,λ0+200,401)
-            c = 299792458 # nm/ns
-            dfs = c/λs - c/λ0 # GHz
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,dfs).xaty(Λ) for Λ in w.x])
-        ns = ['1 phase section','2 phase sections','6 phase sections','"double slit"']
-        # Wave.plots(*[Λ2λ(f) for f in fs],seed=3)
-        Wave.plots(*[Λ2λ(f).rename(n) for f,n in zip(fs,ns)],seed=3,x='λ (nm)',grid=1,save=f'{L/1000:g}mm MgLN phase grating spectrum vs wavelength')
-        Wave.plots(*[Λ2f(f).rename(n) for f,n in zip(fs,ns)],seed=3,x='Δf (GHz)',grid=1,save=f'{L/1000:g}mm MgLN phase grating spectrum vs frequency')
-    def phasegratingvsL():
-        from grating import grating,phasegrating,reverse,ftgrating,spectralcomb
-        from sellmeier import polingperiod
-        λ0,L = 1550,50000
-        Λ = polingperiod(λ0,sell='mglnridgewg',Type='zzz')
-        print('Λ',Λ)
-        Ls = np.linspace(5,100,100//5)
-        gs = [phasegrating(*reverse(L*1000,*grating(Λ,0.5,padx=L*1000)),2) for L in Ls]
-        fs = [ftgrating(*g,p0=Λ,dp=0.08,normalize=0,res=1001)**2 for g in gs]
-        fs = [f/fs[0].max() for f in fs]
-        def Λ2f(w):
-            from sellmeier import polingperiod
-            λs = np.linspace(λ0-200,λ0+200,401)
-            c = 299792458 # nm/ns
-            dfs = c/λs - c/λ0 # GHz
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,dfs).xaty(Λ) for Λ in w.x])
-        fs = [Λ2f(f).rename(f'{L:g}mm') for f,L in zip(fs,Ls)]
-        # Wave.plots(*fs,seed=3,x='Δf (GHz)',grid=1,save=f'MgLN phase grating spectrum vs frequency, L')
-        def df(w):
-            n = len(w)//2
-            return abs( w[n:].xmax() - w[:n].xmax() )
-        Wave([df(f) for f in fs],Ls).plot(m=1,x='L (mm)',y='Δf (GHz)',grid=1,save='dfvsL')
-        Wave([df(f) for f in fs],Ls).plot(m=1,x='L (mm)',y='Δf (GHz)',grid=1,save='dfvsL, log',log=1)
-    def phasegrating2(Ls=[25000,50000],λ0=1550):
-        from grating import grating,phasegrating,reverse,ftgrating
-        from sellmeier import polingperiod
-        def Λ2λ(w):
-            λs = np.linspace(1300,1700,201)
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,λs).xaty(Λ) for Λ in w.x])
-        def Λ2f(w,λ0):
-            λs = np.linspace(λ0-200,λ0+200,401)
-            c = 299792458 # nm/ns
-            dfs = c/λs - c/λ0 # GHz
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,dfs).xaty(Λ) for Λ in w.x])
-        Λ = polingperiod(λ0,sell='mglnridgewg',Type='zzz')
-        print('Λ',Λ)
-        gg0 = reverse(Ls[0],*grating(Λ,0.5,padx=Ls[0]))
-        gg1 = reverse(Ls[1],*grating(Λ,0.5,padx=Ls[1]))
-        gg2 = phasegrating(*gg1,2)
-        fs = [ftgrating(*g,p0=Λ,dp=0.08,normalize=0,res=1001)**2 for g in [gg0,gg1,gg2]]
-        fs = [f/fs[0].max() for f in fs]
-        # Wave.plots(*fs,seed=3)
-        ns = [f'{Ls[0]/10000:g}cm',f'{Ls[1]/10000:g}cm',f'{Ls[1]/10000:g}cm with π phase shift']
-        # Wave.plots(*[Λ2λ(f) for f in fs],seed=3)
-        Wave.plots(*[Λ2λ(f).rename(n) for f,n in zip(fs,ns)],seed=3,x='λ (nm)',y='relative SHG efficiency',grid=1,save=f'{Ls[0]/1000:g}mm,{Ls[1]/1000:g}mm MgLN phase grating spectrum vs wavelength')
-        Wave.plots(*[Λ2f(f,λ0).rename(n) for f,n in zip(fs,ns)],seed=3,x='Δf (GHz)',y='relative SHG efficiency',grid=1,save=f'{Ls[0]/1000:g}mm,{Ls[1]/1000:g}mm MgLN phase grating spectrum vs frequency')
-    def phasegrating3(df=50,λ0=1550,L=50000):
-        from grating import grating,phasegrating,reverse,ftgrating,alternatinggrating
-        from sellmeier import polingperiod
-        def Λ2λ(w):
-            λs = np.linspace(1300,1700,201)
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,λs).xaty(Λ) for Λ in w.x])
-        def Λ2f(w,λ0):
-            λs = np.linspace(λ0-200,λ0+200,401)
-            c = 299792458 # nm/ns
-            dfs = c/λs - c/λ0 # GHz
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,dfs).xaty(Λ) for Λ in w.x])
-        Δf = frequencybandwidth(1,λ0); print('Δf',Δf,'GHz')
-        Δλ = df/Δf; print('Δλ',Δλ,'nm')
-        Λ0 = polingperiod(λ0-Δλ/2,sell='mglnridgewg',Type='zzz')
-        Λ1 = polingperiod(λ0+Δλ/2,sell='mglnridgewg',Type='zzz')
-        Λ = Λ0/2+Λ1/2
-        print('Λ0',Λ0,'Λ1',Λ1)
-        gg0 = phasegrating( *reverse(L,*grating(Λ,0.5,padx=L)) ,2)
-        reps = [1,2,50]
-        gg1 = alternatinggrating(Λ0,Λ1,0.5,0.5,1,gx=L,repeats=reps[0])
-        gg2 = alternatinggrating(Λ0,Λ1,0.5,0.5,1,gx=L,repeats=reps[1])
-        gg3 = alternatinggrating(Λ0,Λ1,0.5,0.5,1,gx=L,repeats=reps[2])
-        fs = [ftgrating(*g,p0=Λ,dp=0.2 if df>200 else 0.05,normalize=0,res=4001)**2 for g in [gg0,gg1,gg2,gg3]]
-        fs = [f/fs[0].max() for f in fs]
-        ns = [''] + [f'{L/r/2000:g}mm' for r in reps]
-        Wave.plots(*[Λ2λ(f).rename(n) for f,n in zip(fs,ns)],seed=3,x='λ (nm)',y='relative SHG efficiency',legendtext='segment length',
-            grid=1,save=f'MgLN alternating grating spectrum vs wavelength, df={df}GHz')
-        Wave.plots(*[Λ2f(f,λ0).rename(n) for f,n in zip(fs,ns)],seed=3,x='Δf (GHz)',y='relative SHG efficiency',legendtext='segment length',
-            grid=1,save=f'MgLN alternating grating spectrum vs frequency, df={df}GHz')
-    def ag2test(reps=1):
-        p0,p1 = 80,120
-        g = alternatinggrating(p0,p1,0.5,0.5,1,2500,repeats=reps)
-        gg = alternatinggrating(p0,p1,0.5,0.5,1,2500,repeats=reps)
-        g2 = agwithphase(p0,p1,0,0,2500,reps)
-        Wave.plots(grating2wave(*g),2+grating2wave(*gg),4+grating2wave(*g2),m=1)
-    def agwithphase(p0,p1,f0,f1,L,repeats=1):
-        from grating import grating,alternatinggrating2
-        g0 = grating(p0,0.5,padx=L,phasex=f0*p0)
-        g1 = grating(p1,0.5,padx=L,phasex=f1*p1)
-        return alternatinggrating2(g0,g1,L,repeats)
-    def phasegrating4(df=25,λ0=1550,L=50000,reps=1):
-        from grating import grating,phasegrating,reverse,ftgrating,alternatinggrating,grating2wave,alternatinggrating2,gratingperiod2wave
-        from sellmeier import polingperiod
-        Δf = frequencybandwidth(1,λ0); print('Δf',Δf,'GHz')
-        Δλ = df/Δf; print('Δλ',Δλ,'nm')
-        Λ0 = polingperiod(λ0-Δλ/2,sell='mglnridgewg',Type='zzz')
-        Λ1 = polingperiod(λ0+Δλ/2,sell='mglnridgewg',Type='zzz')
-        Λ = Λ0/2+Λ1/2
-        print('Λ0',Λ0,'Λ1',Λ1)
-        gg0 = phasegrating( *reverse(L,*grating(Λ,0.5,padx=L)) ,2)
-        # reps = [1,1,1] # reps = [50,50,50]
-        # from random import random
-        # phases = [random(),random(),random()]
-        # gg1 = agwithphase(Λ0,Λ1,0,phases[0],L,reps[0])
-        # gg2 = agwithphase(Λ0,Λ1,0,phases[1],L,reps[1])
-        # gg3 = agwithphase(Λ0,Λ1,0,phases[2],L,reps[2])
-        # gg1 = alternatinggrating(Λ0,Λ1,0.5,0.5,1,gx=L,repeats=reps[0])
-        # gg2 = alternatinggrating(Λ0,Λ1,0.5,0.5,1,gx=L,repeats=reps[1])
-        # gg3 = alternatinggrating(Λ0,Λ1,0.5,0.5,1,gx=L,repeats=reps[2])
-        # fs = [ftgrating(*g,p0=Λ,dp=0.2 if df>200 else 0.05,normalize=0,res=4001)**2 for g in [gg0,gg1,gg2,gg3]]
-        # ns = [''] + [f'{L/r/2000:g}mm' for r in reps]
-        def phases(n): return [i/n for i in range(n)]
-        ggs = [gg0] + [agwithphase(Λ0,Λ1,0,f,L,reps) for f in phases(10)]
-        ns = ['reference'] + [f'{i}' for i,g in enumerate(ggs)]
-        fs = [ftgrating(*g,p0=Λ,dp=0.2 if df>200 else 0.05,normalize=0,res=4001)**2 for g in ggs]
-        fs = [-i/2+f/fs[0].max() for i,f in enumerate(fs)]
-        def Λ2λ(w):
-            λs = np.linspace(1300,1700,201)
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,λs).xaty(Λ) for Λ in w.x])
-        def Λ2f(w,λ0):
-            λs = np.linspace(λ0-200,λ0+200,401)
-            c = 299792458 # nm/ns
-            dfs = c/λs - c/λ0 # GHz
-            Λs = polingperiod(λs,sell='mglnridgewg',Type='zzz')
-            return Wave(w.y,[Wave(Λs,dfs).xaty(Λ) for Λ in w.x])
-        Wave.plots(*[Λ2λ(f).rename(n) for f,n in zip(fs,ns)],c='k012345678901234567890123456789',seed=3,x='λ (nm)',
-            y='relative SHG efficiency', fontsize=8,
-            grid=1,save=f'MgLN alternating grating 2, spectrum vs wavelength, df={df}GHz, segments={2*reps}')
-        Wave.plots(*[Λ2f(f,λ0).rename(n) for f,n in zip(fs,ns)],c='k012345678901234567890123456789',seed=3,x='Δf (GHz)',
-            y='relative SHG efficiency', fontsize=8,
-            grid=1,save=f'MgLN alternating grating 2, spectrum vs frequency, df={df}GHz, segments={2*reps}')
-    def phasegratingtest0():
-        from grating import grating,invertbarsgaps,ftgrating,reverse,phasegrating
-        Λ,L = 30,20000
-        gg0 = reverse(L,*grating(Λ,0.5,padx=L))
-        gg1 = phasegrating(*gg0,12)
-        f0,f1 = [ftgrating(*gg,p0=Λ,dp=1,normalize=0,res=2001)**2 for gg in [gg0,gg1]]
-        Wave.plots(f0/f0.max(),f1/f0.max())
-    def phasegratingtest():
-        from grating import grating,invertbarsgaps,ftgrating,reverse,phasegrating
-        Λ,L = 30,20000
-        gg0 = reverse(L,*grating(Λ,0.5,padx=L))
-        gg1 = phasegrating(*gg0,12)
-        f0,f1 = [ftgrating(*gg,p0=Λ,dp=1,normalize=0,res=2001)**2 for gg in [gg0,gg1]]
-        Wave.plots(f0/f0.max(),f1/f0.max())
-    def consecutivegrating(Λ1,Λ2,L1=2500,L2=2500,ΔL=0,apodize=None): # consecutive poling, grating lengths in mm
-        from grating import grating,invertbarsgaps,ftgrating
-        print(f" {Λ1:g}Λ1 {Λ2:g}Λ2")
-        a0,a1 = grating(Λ1,0.5,padx=L1,padcount=1,gapx=0,phasex=0,x0=-L1/2-ΔL/2,apodize=apodize)
-        b0,b1 = grating(Λ2,0.5,padx=L2,padcount=1,gapx=0,phasex=0,x0=-L2/2+ΔL/2,apodize=apodize)
-        fa = ftgrating(a0,a1,p0=Λ1,dp=3*abs(Λ1-Λ2),normalize=0,res=1001)**2
-        fb = ftgrating(b0,b1,p0=Λ2,dp=3*abs(Λ1-Λ2),normalize=0,res=1001)**2
-        ff = ftgrating(a0+b0,a1+b1,p0=0.5*(Λ1+Λ2),dp=6*abs(Λ1-Λ2),normalize=0,res=1001)**2
-        # ffb = ftgrating(a0+b0,a1+b1,p0=Λ2,dp=4*abs(Λ1-Λ2),normalize=0,res=1001)**2
-        norm = max(fa.max(),fb.max())
-        Wave.plots(fa/norm,fb/norm,ff/norm,c='012',l='3300',scale=(2,1),x='Λ (µm)',y='relative QPM response',legendtext=f"{ΔL/1000:g}mm separation",
-            save=f"consecutivegrating {L1}L1 {L2}L2 {ΔL}ΔL" + (" apodized" if apodize else ""))
-    def phasegratingtests():
-        import sellmeier
-        phasegratingfreq()
-        phasegratingvsL()
-        phasegrating2([20000,40000])
-        phasegrating2([25000,50000])
-        phasegrating2([20000,50000])
-        phasegrating3(500)
-        phasegrating3(50)
-        phasegrating3(25)
-        ag2test(3)
-        phasegrating4(500)
-        phasegrating4(200)
-        phasegrating4(50)
-        phasegrating4(25)
-        phasegrating4(12.5)
-        phasegrating4(50,reps=50)
-        phasegrating4(25,reps=50)
-        phasegrating4(12.5,reps=50)
-    def consecutivegratings():
-        # consecutivegrating(Λ1=97,Λ2=113,L1=5000,L2=5000,ΔL=0)
-        consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=2500,L2=2500,ΔL=0)
-        consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=2500,L2=2500,ΔL=2500)
-        consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=2500,L2=2500,ΔL=5000)
-        consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=2500,L2=2500,ΔL=7500)
-        consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=2500,L2=2500,ΔL=10000)
-        # consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=5000,L2=5000,ΔL=0)
-        # consecutivegrating(Λ1=2500/29.5,Λ2=2500/27.5,L1=2500,L2=2500,ΔL=5000,apodize='triangle')
-    def chirptest():
-        f0 = ftgrating(*kchirpgrating(p0=14.45,p1=14.55,dc=0.5,padx=51000,padcount=1),p0=14.5,dp=0.2,normalize=1,res=1001)**2
-        f0.plot(x='Λ (µm)',fewerticks=1)
-    def apodizebandwidth(Λ=100,L=10000):
-        apodizes = [None,*'trapezoidal,triangle,asingauss23,asintriangle'.split(',')]
-        names = 'unapodized,trapezoidal,triangle,asin-gauss,asin-triangle'.split(',')
-        gs = [grating(Λ,dc=0.5,padx=L,padcount=1,gapx=0,phasex=0,x0=0,apodize=apodize) for apodize in apodizes]
-        fs = [ftgrating(*g,p0=Λ,dp=10,normalize=0,amplitude=0,res=2001).rename(s) for s,g in zip(names,gs)]
-        fwhms = [f.fwhm() for f in fs]
-        names = [s+f" {fwhm:.2f}µm FWHM" for s,fwhm in zip(names,fwhms)]
-        fs = [f.rename(s) for s,f in zip(names,fs)]
-        Wave.plots(*[f/fs[0].max() for f in fs],c='k0123',l='30000',log=1,xlim='f',ylim=(1e-4,1),grid=1,x='Λ (µm)',y='relative intensity',fontsize=8,abbrev=1,
-            save=f"apodized grating bandwidth, L={L/1000:g}mm")
-    # phasegratingtests() # ~1hr run time
-    # simplephasegrating()
-    # phasegratingtest0()
-    # phasegratingtest()
-    consecutivegratings()
-    # chirptest()
-    # apodizebandwidth(106.383)
+    simplephasegrating()
