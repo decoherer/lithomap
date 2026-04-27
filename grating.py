@@ -148,22 +148,10 @@ def breakupgaps(barstarts,barends,maxgap,barsize):
     gapstarts,gapends = barends[:-1],barstarts[1:]
     xx0,xx1 = breakupbars(gapstarts,gapends,maxbar=maxgap,gapsize=barsize)
     return barstarts[:1]+xx1,xx0+barends[-1:]
-# def breakupgaps(barstarts,barends,maxgap,barsize):
-#     if not maxgap:
-#         return barstarts,barends
-#     assert barsize<maxgap
-#     gapstarts,gapends = barends[:-1],barstarts[1:]
-#     xx0,xx1 = [],[] # xx0,xx1 will be the new gapstarts,gapends
-#     for x0,x1 in zip(gapstarts,gapends):
-#         if maxgap < x1-x0:
-#             n = 1 + int((x1-x0+barsize)/(maxgap+barsize))
-#             gap = (x1-x0+barsize)/n - barsize
-#             xx0 += [x0+i*(gap+barsize) for i in range(n)]
-#             xx1 += [x0+i*(gap+barsize)+gap for i in range(n)]
-#             assert np.allclose(x1,x0+(n-1)*(gap+barsize)+gap)
-#         else:
-#             xx0,xx1 = xx0+[x0],xx1+[x1]
-#     return barstarts[:1]+xx1,xx0+barends[-1:]
+def apodizebreakup(Λ,σ,dc,gx,defaulton,minbar):
+    g = apodizebars(*grating(Λ,dc=dc,padx=gx),σ=σ,apodize='asingauss')
+    gg = g if defaulton else invertbarsgaps(*g)
+    return breakupbars(*gg,maxbar=2*minbar,gapsize=minbar)
 def kchirpgrating(p0,p1,dc,padx,padcount=1,gapx=0,phase=0,x0=0): # https://www.gaussianwaves.com/2014/07/chirp-signal-frequency-sweeping-fft-and-power-spectral-density/
     assert 0==phase, 'phase not implemented'
     k0,k1 = 2*pi/p0,2*pi/p1
@@ -270,7 +258,7 @@ def phaseflipgrating(period,n,padcount,gx): # n = number of periods between half
     barstarts = [(x+j*2*n)*0.5*period for j in range(m) for x in sectionstarts(n,j)]
     barends =   [(x+j*2*n)*0.5*period for j in range(m) for x in sectionstarts(n,j+1)]
     return barstarts,barends
-def alternatinggrating2(g0,g1,L,repeats=1):
+def alternatinggrating2(g0,g1,L,repeats=1): # L in µm
     def keepit(bar,j):
         x0,x1 = bar
         if 0==j:
@@ -328,7 +316,7 @@ def flipgratingbars(signs,period): # note signed segments are length period/2
     barends = [z for z,sign0,sign1 in zip(zs,sign0s,sign1s) if sign0==-1 and sign1==+1]
     assert barstarts==[z for z,sign0,sign1 in zip(zs,sign0s,sign1s) if sign0>sign1]
     return mergetouchingbars(barstarts,barends)
-def spectralcomb(g0,g1,offfraction,L=None): # removes all bars in middle: ■■____■■
+def spectralcomb(g0,g1,offfraction,L=None): # removes all bars in middle: ■■____■■, L in µm
     L = L if L is not None else g1[-1]
     x0,x1 = (1-offfraction)*L/2,(1+offfraction)*L/2
     ps = [(a,b) for a,b in zip(g0,g1) if a<x0 or x1<b]
@@ -360,14 +348,14 @@ def onoffs2grating(d,pattern,offvalue=0,δ=0,L=None,wave=False):
 def deltasigmamatch(target):
     p = np.arange(len(target)) % 2 # parity mask [0 1 0 1 0 ...]
     return np.round((target - p) / 2) * 2 + p # snap to the nearest integer with the required parity
-def fixedbarapodized(Λ,L,σ,wave=False): # Λ in µm, L in mm
+def fixedbarapodized(Λ,gx,σ,wave=False): # Λ in µm, gx in µm
     from scipy.special import erf
     Λ = abs(Λ)
     def g(n): # half gauss, n = halfbar index
         return np.exp(-0.5*n**2/σn**2)
     def intg(n): # integral of half gauss
         return σn * np.sqrt(np.pi/2) * erf( n / (np.sqrt(2)*σn) )
-    N,σn = int(1e3*L/Λ-1),σ*2*1e3*L/Λ # N = number of halfbars in last half of grating, not counting the middle halfbar
+    N,σn = int(gx/Λ-1),σ*2*gx/Λ # N = number of halfbars in last half of grating, not counting the middle halfbar
     ns = [0]+[0.5+i for i in range(N)]
     t = g(Wave(ns,ns)).trapezoid().rename('t')
     h = Wave([intg(n) for n in ns],ns,'h')
